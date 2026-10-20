@@ -2,10 +2,12 @@ let
     Source = #table(
         {"Internal Order","Cost Centre","Cost Element","Val.in rep.cur.","Period","FinYear","TBL","Year Flag","Doc type"},
         {
-            {"MA004176","G10092",736000,-10000,8,"2026","BUD","BUD","BUD"},
-            {"MA004414","G10092",736000,-5000,8,"2026","BUD","BUD","BUD"}
+            {"MA004176","G10092",736000,-10000,8,"2027","BUD","BUD","BUD"},
+            {"MA004414","G10092",736000,-5000,8,"2027","BUD","BUD","BUD"}
         }
     ),
-    Typed = Table.TransformColumnTypes(Source,{{"Internal Order",type text},{"Cost Centre",type text},{"Cost Element",Int64.Type},{"Val.in rep.cur.",type number},{"Period",Int64.Type},{"FinYear",type text},{"TBL",type text},{"Year Flag",type text},{"Doc type",type text}})
+    Schema = {"Internal Order","Cost Centre","Cost Element","Val.in rep.cur.","Period","FinYear","TBL","Year Flag","Doc type"},
+    Structured = Table.SelectColumns(Source, Schema, MissingField.UseNull),
+    Typed = Table.TransformColumnTypes(Structured,{{"Internal Order",type text},{"Cost Centre",type text},{"Cost Element",Int64.Type},{"Val.in rep.cur.",type number},{"Period",Int64.Type},{"FinYear",type text},{"TBL",type text},{"Year Flag",type text},{"Doc type",type text}})
 in
     Typed
