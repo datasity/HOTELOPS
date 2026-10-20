@@ -1,33 +1,37 @@
 EVALUATE
-VAR _CCs = SELECTCOLUMNS('Marketing', "CC", 'Marketing'[GL])
-VAR _Mapped =
-    SELECTCOLUMNS(
-        FILTER(
-            SUMMARIZE(
-                CALCULATETABLE(
-                    'FS SPL (fact)',
-                    'FS SPL (fact)'[SPL Line source] = "IO",
-                    TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
-                ),
-                'FS SPL (fact)'[IO Name]
-            ),
-            NOT ISBLANK('FS SPL (fact)'[IO Name])
-        ),
-        "IO", 'FS SPL (fact)'[IO Name]
-    )
-VAR _Others =
-    FILTER(
-        CALCULATETABLE('FS SPL (fact)', TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])),
-        ISBLANK('FS SPL (fact)'[IO Name]) || NOT ('FS SPL (fact)'[IO Name] IN _Mapped)
-    )
+VAR _Headlines = DISTINCT(SELECTCOLUMNS('Marketing', "Headline", 'Marketing'[Marketing Headline]))
 RETURN
-SUMMARIZE(
-    _Others,
-    'FS SPL (fact)'[Cost Centre],
-    'FS SPL (fact)'[GL],
-    'FS SPL (fact)'[Doc type],
-    'FS SPL (fact)'[IO Name],
-    'FS SPL (fact)'[Year Flag],
-    "Amount", SUM('FS SPL (fact)'[Amount])
+GENERATE(
+    _Headlines,
+    VAR _H   = [Headline]
+    VAR _CCs = SELECTCOLUMNS(
+                   FILTER(ALL('Marketing'), 'Marketing'[Marketing Headline] = _H),
+                   "CC", 'Marketing'[GL])
+    VAR _Mapped =
+        SELECTCOLUMNS(
+            FILTER(
+                SUMMARIZE(
+                    CALCULATETABLE(
+                        'FS SPL (fact)',
+                        'FS SPL (fact)'[SPL Line source] = "IO",
+                        TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
+                    ),
+                    'FS SPL (fact)'[IO Name]
+                ),
+                NOT ISBLANK('FS SPL (fact)'[IO Name])
+            ),
+            "IO", 'FS SPL (fact)'[IO Name])
+    RETURN
+    SUMMARIZE(
+        FILTER(
+            CALCULATETABLE('FS SPL (fact)', TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])),
+            ISBLANK('FS SPL (fact)'[IO Name]) || NOT ('FS SPL (fact)'[IO Name] IN _Mapped)
+        ),
+        'FS SPL (fact)'[Year Flag],
+        'FS SPL (fact)'[Period],
+        'FS SPL (fact)'[Cost Centre],
+        'FS SPL (fact)'[GL],
+        "Amount", SUM('FS SPL (fact)'[Amount])
+    )
 )
-ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
+ORDER BY [Headline], 'FS SPL (fact)'[Year Flag], 'FS SPL (fact)'[Period], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
