@@ -1,13 +1,33 @@
-let
-    Source = #table(
-        {"Internal Order","Cost Centre","Cost Element","Val.in rep.cur.","Period","FinYear","TBL","Year Flag","Doc type"},
-        {
-            {"MA004176","G10092",736000,-10000,8,"2027","BUD","BUD","BUD"},
-            {"MA004414","G10092",736000,-5000,8,"2027","BUD","BUD","BUD"}
-        }
-    ),
-    Schema = {"Internal Order","Cost Centre","Cost Element","Val.in rep.cur.","Period","FinYear","TBL","Year Flag","Doc type"},
-    Structured = Table.SelectColumns(Source, Schema, MissingField.UseNull),
-    Typed = Table.TransformColumnTypes(Structured,{{"Internal Order",type text},{"Cost Centre",type text},{"Cost Element",Int64.Type},{"Val.in rep.cur.",type number},{"Period",Int64.Type},{"FinYear",type text},{"TBL",type text},{"Year Flag",type text},{"Doc type",type text}})
-in
-    Typed
+EVALUATE
+VAR _CCs = SELECTCOLUMNS('Marketing', "CC", 'Marketing'[GL])
+VAR _Mapped =
+    SELECTCOLUMNS(
+        FILTER(
+            SUMMARIZE(
+                CALCULATETABLE(
+                    'FS SPL (fact)',
+                    'FS SPL (fact)'[SPL Line source] = "IO",
+                    TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
+                ),
+                'FS SPL (fact)'[IO Name]
+            ),
+            NOT ISBLANK('FS SPL (fact)'[IO Name])
+        ),
+        "IO", 'FS SPL (fact)'[IO Name]
+    )
+VAR _Others =
+    FILTER(
+        CALCULATETABLE('FS SPL (fact)', TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])),
+        ISBLANK('FS SPL (fact)'[IO Name]) || NOT ('FS SPL (fact)'[IO Name] IN _Mapped)
+    )
+RETURN
+SUMMARIZE(
+    _Others,
+    'FS SPL (fact)'[Cost Centre],
+    'FS SPL (fact)'[GL],
+    'FS SPL (fact)'[Doc type],
+    'FS SPL (fact)'[IO Name],
+    'FS SPL (fact)'[Year Flag],
+    "Amount", SUM('FS SPL (fact)'[Amount])
+)
+ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
