@@ -71,3 +71,20 @@ VAR _Status =
     ADDCOLUMNS(
         _Loaded,
         "Message",
+            IF(
+                _MaxP <= [MinPeriod],
+                [Label] & " -",
+                IF(
+                    [RowCount] = 0,
+                    [Label] & " " & _Cross & " (none)",
+                    IF(
+                        [LoadedFY] <> _CurrentFY,
+                        [Label] & " " & _Cross & " (" & [LoadedFY] & ")",
+                        [Label] & " " & _Tick
+                    )
+                )
+            )
+    )
+
+RETURN
+    CONCATENATEX(_Status, [Message], "  |  ", [Sort], ASC)
