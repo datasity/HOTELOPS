@@ -1,16 +1,22 @@
 MissingData Narration =
 VAR _MaxP =
-    CALCULATE(
-        MAX('FS SPL (fact)'[Period]),
-        REMOVEFILTERS('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "BEAM"
+    COALESCE(
+        CALCULATE(
+            MAX('FS SPL (fact)'[Period]),
+            REMOVEFILTERS('FS SPL (fact)'),
+            'FS SPL (fact)'[TBL] = "BEAM"
+        ),
+        0
     )
 
 VAR _CurrentFY =
-    CALCULATE(
-        MAX('FS SPL (fact)'[FinYear]),
-        REMOVEFILTERS('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "BEAM"
+    FORMAT(
+        CALCULATE(
+            MAX('FS SPL (fact)'[FinYear]),
+            REMOVEFILTERS('FS SPL (fact)'),
+            'FS SPL (fact)'[TBL] = "BEAM"
+        ),
+        "0"
     )
 
 VAR _Checks =
@@ -40,18 +46,24 @@ VAR _Loaded =
         "RowCount",
             VAR _k = [VersionKey]
             RETURN
-                CALCULATE(
-                    COUNTROWS('FS SPL (fact)'),
-                    REMOVEFILTERS('FS SPL (fact)'),
-                    'FS SPL (fact)'[Version] = _k
+                COALESCE(
+                    CALCULATE(
+                        COUNTROWS('FS SPL (fact)'),
+                        REMOVEFILTERS('FS SPL (fact)'),
+                        'FS SPL (fact)'[Version] = _k
+                    ),
+                    0
                 ),
         "LoadedFY",
             VAR _k = [VersionKey]
             RETURN
-                CALCULATE(
-                    MAX('FS SPL (fact)'[TblFinYear]),
-                    REMOVEFILTERS('FS SPL (fact)'),
-                    'FS SPL (fact)'[Version] = _k
+                FORMAT(
+                    CALCULATE(
+                        MAX('FS SPL (fact)'[TblFinYear]),
+                        REMOVEFILTERS('FS SPL (fact)'),
+                        'FS SPL (fact)'[Version] = _k
+                    ),
+                    "0"
                 )
     )
 
@@ -59,13 +71,14 @@ VAR _Status =
     ADDCOLUMNS(
         _Loaded,
         "Message",
-            SWITCH(
-                TRUE(),
-                [RowCount] = 0, "No file loaded for " & [Label],
-                FORMAT([LoadedFY], "") <> FORMAT(_CurrentFY, ""),
-                    [Label] & " data is loaded for " & FORMAT([LoadedFY], "")
-                    & " but needs to be " & FORMAT(_CurrentFY, ""),
-                [Label] & " passed"
+            IF(
+                [RowCount] = 0,
+                "No file loaded for " & [Label],
+                IF(
+                    [LoadedFY] <> _CurrentFY,
+                    [Label] & " data is loaded for " & [LoadedFY] & " but needs to be " & _CurrentFY,
+                    [Label] & " passed"
+                )
             )
     )
 
