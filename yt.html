@@ -1,8 +1,70 @@
-P6F Marketing
-BUD Marketing
-BUDCC
-P9F Marketing
-P3F Marketing
-P9FCC
-P6FCC
-P3FCC
+MissingData Narration =
+VAR _MaxP =
+    CALCULATE(
+        MAX('FS SPL (fact)'[Period]),
+        REMOVEFILTERS('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "BEAM"
+    )
+
+VAR _CurrentFY =
+    CALCULATE(
+        MAX('FS SPL (fact)'[FinYear]),
+        REMOVEFILTERS('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "BEAM"
+    )
+
+-- One row per file. MinPeriod = the file is required once MaxP is above it.
+VAR _Checks =
+    DATATABLE(
+        "Sort", INTEGER,
+        "Label", STRING,
+        "VersionKey", STRING,
+        "MinPeriod", INTEGER,
+        {
+            {1, "BUD CC",        "BUDCC",         0},
+            {2, "BUD Marketing", "BUD Marketing", 0},
+            {3, "P3F CC",        "P3FCC",         3},
+            {4, "P3F Marketing", "P3F Marketing", 3},
+            {5, "P6F CC",        "P6FCC",         6},
+            {6, "P6F Marketing", "P6F Marketing", 6},
+            {7, "P9F CC",        "P9FCC",         9},
+            {8, "P9F Marketing", "P9F Marketing", 9}
+        }
+    )
+
+VAR _Required =
+    FILTER(_Checks, _MaxP > [MinPeriod])
+
+VAR _Loaded =
+    ADDCOLUMNS(
+        _Required,
+        "RowCount",
+            CALCULATE(
+                COUNTROWS('FS SPL (fact)'),
+                REMOVEFILTERS('FS SPL (fact)'),
+                'FS SPL (fact)'[Version] = [VersionKey]
+            ),
+        "LoadedFY",
+            CALCULATE(
+                MAX('FS SPL (fact)'[TblFinYear]),
+                REMOVEFILTERS('FS SPL (fact)'),
+                'FS SPL (fact)'[Version] = [VersionKey]
+            )
+    )
+
+VAR _Status =
+    ADDCOLUMNS(
+        _Loaded,
+        "Message",
+            SWITCH(
+                TRUE(),
+                [RowCount] = 0, "No file loaded for " & [Label],
+                FORMAT([LoadedFY], "") <> FORMAT(_CurrentFY, ""),
+                    [Label] & " data is loaded for " & FORMAT([LoadedFY], "")
+                    & " but needs to be " & FORMAT(_CurrentFY, ""),
+                [Label] & " passed"
+            )
+    )
+
+RETURN
+    CONCATENATEX(_Status, [Message], " | ", [Sort], ASC)
