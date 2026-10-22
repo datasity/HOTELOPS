@@ -1,90 +1,250 @@
-MissingData Narration =
-VAR _MaxP =
-    COALESCE(
-        CALCULATE(
-            MAX('FS SPL (fact)'[Period]),
-            REMOVEFILTERS('FS SPL (fact)'),
-            'FS SPL (fact)'[TBL] = "BEAM"
-        ),
-        0
-    )
+let
+    // ---------- SharePoint source ----------
+    SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
+    FolderEnd = "/VEEPEE/SYSTEMDOC/",   // files must sit directly in this folder
+    ValidExtensions = {".xlsx", ".xlsm", ".xlsb"},
 
-VAR _CurrentFY =
-    FORMAT(
-        CALCULATE(
-            MAX('FS SPL (fact)'[FinYear]),
-            REMOVEFILTERS('FS SPL (fact)'),
-            'FS SPL (fact)'[TBL] = "BEAM"
-        ),
-        "0"
-    )
+     EmptyOutput = #table(
+        type table[
+            SourceFile=nullable text, SourceSheet=nullable text, DocumentType=nullable text,
+            SAPDocumentType=nullable text, GLAccount=nullable text,
+            Date de la transaction=nullable date, Date du remboursement=nullable date, Numréro de commande=nullable text,
+            Quantité=nullable number, SystemAmount=nullable number, AmountSource=nullable text
+        ], {}
+    ),
 
-VAR _Tick  = UNICHAR(10003)
-VAR _Cross = UNICHAR(10007)
+    CleanText = (v as any) as nullable text =>
+        if v=null then null else
+        let x=Text.Trim(Text.Clean(Text.Replace(Text.From(v),Character.FromNumber(160)," ")))
+        in if x="" then null else x,
 
-VAR _Checks =
-    DATATABLE(
-        "Sort", INTEGER,
-        "Label", STRING,
-        "VersionKey", STRING,
-        "MinPeriod", INTEGER,
-        {
-            {1, "BUD CC",   "BUDCC",         0},
-            {2, "Mkt BUD",  "BUD Marketing", 0},
-            {3, "P3F CC",   "P3FCC",         3},
-            {4, "Mkt P3F",  "P3F Marketing", 3},
-            {5, "P6F CC",   "P6FCC",         6},
-            {6, "Mkt P6F",  "P6F Marketing", 6},
-            {7, "P9F CC",   "P9FCC",         9},
-            {8, "Mkt P9F",  "P9F Marketing", 9}
-        }
-    )
+    CleanName = (v as any) as text => let x=CleanText(v) in if x=null then "" else x,
 
-VAR _Loaded =
-    ADDCOLUMNS(
-        _Checks,
-        "RowCount",
-            VAR _k = [VersionKey]
-            RETURN
-                COALESCE(
-                    CALCULATE(
-                        COUNTROWS('FS SPL (fact)'),
-                        REMOVEFILTERS('FS SPL (fact)'),
-                        'FS SPL (fact)'[Version] = _k
-                    ),
-                    0
-                ),
-        "LoadedFY",
-            VAR _k = [VersionKey]
-            RETURN
-                FORMAT(
-                    CALCULATE(
-                        MAX('FS SPL (fact)'[TblFinYear]),
-                        REMOVEFILTERS('FS SPL (fact)'),
-                        'FS SPL (fact)'[Version] = _k
-                    ),
-                    "0"
-                )
-    )
+    IsInvoiceSheet = (v as any) as logical => Text.StartsWith(CleanName(v),"Facture",Comparer.OrdinalIgnoreCase),
+    IsCreditSheet = (v as any) as logical => Text.StartsWith(CleanName(v),"Avoir",Comparer.OrdinalIgnoreCase),
 
-VAR _Status =
-    ADDCOLUMNS(
-        _Loaded,
-        "Message",
-            IF(
-                _MaxP <= [MinPeriod],
-                [Label] & " -",
-                IF(
-                    [RowCount] = 0,
-                    [Label] & " " & _Cross & " (none)",
-                    IF(
-                        [LoadedFY] <> _CurrentFY,
-                        [Label] & " " & _Cross & " (" & [LoadedFY] & ")",
-                        [Label] & " " & _Tick
-                    )
-                )
-            )
-    )
+    CleanKey = (v as any) as nullable text =>
+        let x=CleanText(v)
+        in if x=null then null else Text.Upper(Text.Remove(x,{" ",Character.FromNumber(160)})),
 
-RETURN
-    CONCATENATEX(_Status, [Message], "  |  ", [Sort], ASC)
+    FindColumn = (names as list, options as list) as nullable text =>
+        let
+            cleanNames=List.Transform(names, each CleanName(_)),
+            positions=List.Transform(options, each List.PositionOf(cleanNames,CleanName(_),Occurrence.First,Comparer.OrdinalIgnoreCase)),
+            valid=List.Select(positions, each _>=0)
+        in if List.IsEmpty(valid) then null else names{List.First(valid)},
+
+    FindHeaderRow = (t as table) as nullable number =>
+        let
+            rows=Table.ToRows(Table.FirstN(t,100)),
+            checks=List.Transform(rows, each List.AnyTrue(List.Transform(_, (x)=>try Text.Lower(CleanName(x))="date de la transaction" otherwise false))),
+            p=List.PositionOf(checks,true)
+        in if p<0 then null else p,
+
+    ToDate = (v as any) as nullable date =>
+        if v=null then null
+        else if v is date then v
+        else if v is datetime or v is datetimezone or v is number then try Date.From(v) otherwise null
+        else let
+            x=CleanText(v),
+            a=if x=null then null else try Date.FromText(x,[Culture="fr-FR"]) otherwise null,
+            b=if a<>null or x=null then a else try Date.FromText(x,[Culture="en-GB"]) otherwise null
+        in b,
+
+    ToNumber = (v as any) as nullable number =>
+        if v=null then null
+        else if v is number then v
+        else let
+            x=CleanText(v),
+            y=if x=null then null else Text.Replace(Text.Replace(Text.Replace(x,Character.FromNumber(160),""),"€",""),"£",""),
+            a=if y=null then null else try Number.FromText(y,"fr-FR") otherwise null,
+            b=if a<>null or y=null then a else try Number.FromText(y,"en-GB") otherwise null
+        in b,
+
+    ValuesOrNull = (t as table, c as nullable text, n as number) as list =>
+        if c=null then List.Repeat({null},n) else Table.Column(t,c),
+
+    // Handles "MAY26 - ...", "JULY26 - ..." and "August_ExtractionDate20260801..."
+    GetReportMonthDate = (file as nullable text) as nullable date =>
+        if file=null then null else
+        let
+            upper=Text.Upper(Text.Trim(file)),
+            monthText=Text.Combine(List.FirstN(Text.ToList(upper), each _>="A" and _<="Z")),
+            monthNo=
+                if List.Contains({"JAN","JANUARY"},monthText) then 1
+                else if List.Contains({"FEB","FEBRUARY"},monthText) then 2
+                else if List.Contains({"MAR","MARCH"},monthText) then 3
+                else if List.Contains({"APR","APRIL"},monthText) then 4
+                else if monthText="MAY" then 5
+                else if List.Contains({"JUN","JUNE"},monthText) then 6
+                else if List.Contains({"JUL","JULY"},monthText) then 7
+                else if List.Contains({"AUG","AUGUST"},monthText) then 8
+                else if List.Contains({"SEP","SEPT","SEPTEMBER"},monthText) then 9
+                else if List.Contains({"OCT","OCTOBER"},monthText) then 10
+                else if List.Contains({"NOV","NOVEMBER"},monthText) then 11
+                else if List.Contains({"DEC","DECEMBER"},monthText) then 12
+                else null,
+            yy=Text.Middle(upper,Text.Length(monthText),2),
+            yearFromPrefix=if Text.Length(Text.Select(yy,{"0".."9"}))=2 then 2000+Number.FromText(yy) else null,
+            extPos=Text.PositionOf(upper,"EXTRACTIONDATE"),
+            yearFromExtraction=if extPos<0 then null else try Number.FromText(Text.Middle(upper,extPos+14,4)) otherwise null,
+            yearNo=if yearFromPrefix<>null then yearFromPrefix else yearFromExtraction
+        in if monthNo=null or yearNo=null then null else #date(yearNo,monthNo,1),
+
+    MonthLabel = (d as nullable date) as nullable text =>
+        if d=null then null else Text.Upper(Date.ToText(d,"MMMM yyyy","en-GB")),
+
+    ProcessSheet = (sheet as table, sheetName as text, fileName as text) as table =>
+        let
+            hp=FindHeaderRow(sheet),
+            output=if hp=null then EmptyOutput else
+            let
+                promoted=try Table.PromoteHeaders(Table.Skip(sheet,hp),[PromoteAllScalars=true]) otherwise #table({},{}),
+                t=Table.TransformColumnNames(promoted, each CleanName(_)),
+                cols=Table.ColumnNames(t),
+                cDate=FindColumn(cols,{"Date de la transaction"}),
+                cRefund=FindColumn(cols,{"Date du remboursement"}),
+                cOrder=FindColumn(cols,{"Numréro de commande","Numéro de commande","Numero de commande"}),
+                cQty=FindColumn(cols,{"Quantité","Quantite"}),
+                cInvSales=FindColumn(cols,{"Montant CA HT"}),
+                cInvShip=FindColumn(cols,{"Montant FP HT"}),
+                cInvComm=FindColumn(cols,{"Montant total Rem VP TTC","Montant total Rem. VP TTC"}),
+                cCredSales=FindColumn(cols,{"Montant CA HT remboursé","Montant CA HT rembourse"}),
+                cCredShip=FindColumn(cols,{"Montant FP HT remboursé","Montant FP HT rembourse"}),
+                cCredComm=FindColumn(cols,{"Montant total Rem VP TTC facture","Montant total Rem. VP TTC facture","Montant total Rem VP TTC facturé"}),
+                n=Table.RowCount(t),
+                standard=Table.FromColumns({
+                    List.Repeat({fileName},n),List.Repeat({sheetName},n),ValuesOrNull(t,cDate,n),ValuesOrNull(t,cRefund,n),ValuesOrNull(t,cOrder,n),ValuesOrNull(t,cQty,n),
+                    ValuesOrNull(t,cInvSales,n),ValuesOrNull(t,cInvShip,n),ValuesOrNull(t,cInvComm,n),ValuesOrNull(t,cCredSales,n),ValuesOrNull(t,cCredShip,n),ValuesOrNull(t,cCredComm,n)
+                },{"SourceFile","SourceSheet","Date de la transaction","Date du remboursement","Numréro de commande","Quantité","InvSales","InvShip","InvComm","CredSales","CredShip","CredComm"}),
+                clean=Table.TransformColumns(standard,{
+                    {"SourceFile",each CleanText(_),type nullable text},{"SourceSheet",each CleanText(_),type nullable text},
+                    {"Date de la transaction",each ToDate(_),type nullable date},{"Date du remboursement",each ToDate(_),type nullable date},
+                    {"Numréro de commande",each CleanKey(_),type nullable text},
+                    {"Quantité",each ToNumber(_),type nullable number},{"InvSales",each ToNumber(_),type nullable number},
+                    {"InvShip",each ToNumber(_),type nullable number},
+                    {"InvComm",each ToNumber(_),type nullable number},{"CredSales",each ToNumber(_),type nullable number},
+                    {"CredShip",each ToNumber(_),type nullable number},{"CredComm",each ToNumber(_),type nullable number}
+                }),
+                valid=Table.SelectRows(clean, each [Numréro de commande]<>null and [Numréro de commande]<>""),
+                addGL=Table.AddColumn(valid,"GLRows",each
+                    let
+                        inv=IsInvoiceSheet([SourceSheet]), cred=IsCreditSheet([SourceSheet]),
+                        sap=if inv then "XR" else if cred then "XS" else null,
+                        doc=if inv then "Invoice" else if cred then "Credit Note" else null,
+                        iv=if [InvSales]=null then 0 else [InvSales], ip=if [InvShip]=null then 0 else [InvShip],
+                        rs=if [CredSales]=null then 0 else [CredSales], rp=if [CredShip]=null then 0 else [CredShip],
+                        sales=if inv and not([InvSales]=null and [InvShip]=null) then iv+ip
+                              else if cred and not([CredSales]=null and [CredShip]=null) then rs+rp else null,
+                        comm=if inv then [InvComm] else if cred then [CredComm] else null,
+                        base=[SourceFile=[SourceFile],SourceSheet=[SourceSheet],DocumentType=doc,SAPDocumentType=sap,Date de la transaction=[Date de la transaction],Date du remboursement=[Date du remboursement],Numréro de commande=[Numréro de commande]],
+                        a=base&[GLAccount="248601",Quantité=[Quantité],SystemAmount=sales,AmountSource=if inv then "Montant CA HT + Montant FP HT" else "Montant CA HT remboursé + Montant FP HT remboursé"],
+                        b=base&[GLAccount="348919",Quantité=null,SystemAmount=comm,AmountSource=if inv then "Montant total Rem VP TTC" else "Montant total Rem VP TTC facture"]
+                    in Table.FromRecords({a,b},Value.Type(EmptyOutput)),type table),
+                tables=addGL[GLRows], combined=if List.IsEmpty(tables) then EmptyOutput else Table.Combine(tables),
+                result=Table.SelectRows(combined,each [SystemAmount]<>null and [SAPDocumentType]<>null and [GLAccount]<>null)
+            in result
+        in output,
+
+    ProcessWorkbook = (content as binary, fileName as text) as table =>
+        let
+            attempt=try Excel.Workbook(content,null,true),
+            wb=if attempt[HasError] then #table(type table[Item=nullable text,Kind=nullable text,Data=table],{}) else attempt[Value],
+            sheets=Table.SelectRows(wb,each [Kind]="Sheet" and (IsInvoiceSheet([Item]) or IsCreditSheet([Item]))),
+            added=Table.AddColumn(sheets,"Processed",each try ProcessSheet([Data],CleanName([Item]),fileName) otherwise EmptyOutput,type table),
+            tables=List.Select(added[Processed],each try Value.Is(_,type table) otherwise false)
+        in if List.IsEmpty(tables) then EmptyOutput else Table.Combine(tables),
+
+    Source=SharePoint.Files(SiteURL, [ApiVersion = 15]),
+    Files=Table.SelectRows(Source,each Text.EndsWith(Text.Lower([Folder Path]), Text.Lower(FolderEnd)) and List.Contains(ValidExtensions,Text.Lower([Extension])) and not Text.StartsWith([Name],"~$") and (try [Attributes]?[Hidden]?<>true otherwise true)),
+    FileCols=Table.SelectColumns(Files,{"Content","Name","Date modified"},MissingField.UseNull),
+    AddData=Table.AddColumn(FileCols,"Data",each try ProcessWorkbook([Content],[Name]) otherwise EmptyOutput,type table),
+    AllData=if List.IsEmpty(AddData[Data]) then EmptyOutput else Table.Combine(AddData[Data]),
+    ValidRows=Table.SelectRows(AllData,each [Numréro de commande]<>null and [SAPDocumentType]<>null and [GLAccount]<>null and [SystemAmount]<>null),
+    AddMonthDate=Table.AddColumn(ValidRows,"Report Month Date",each GetReportMonthDate([SourceFile]),type nullable date),
+    AddMonth=Table.AddColumn(AddMonthDate,"Report Month",each MonthLabel([Report Month Date]),type nullable text),
+
+    AddFingerprint=Table.AddColumn(AddMonth,"Fingerprint",each Text.Combine({
+        CleanKey([Numréro de commande]),
+        if [Date de la transaction]=null then "" else Date.ToText([Date de la transaction],"yyyyMMdd"),
+        if [Date du remboursement]=null then "" else Date.ToText([Date du remboursement],"yyyyMMdd"),
+        CleanKey([SAPDocumentType]),CleanKey([GLAccount]),
+        if [Quantité]=null then "" else Number.ToText(Number.Round([Quantité],4),"0.####","en-GB"),
+        Number.ToText(Number.Round([SystemAmount],2,RoundingMode.AwayFromZero),"0.00","en-GB"),CleanKey([AmountSource])
+    },"|"),type text),
+
+    SortedForOccurrence=Table.Sort(AddFingerprint,{{"SourceFile",Order.Ascending},{"Fingerprint",Order.Ascending},{"Date de la transaction",Order.Ascending}}),
+    NumberWithinFile=Table.Group(SortedForOccurrence,{"SourceFile","Fingerprint"},{{"Rows",each Table.AddIndexColumn(_,"Occurrence",1,1,Int64.Type),type table}},GroupKind.Local),
+    OccurrenceRows=if Table.IsEmpty(NumberWithinFile) then #table({}, {}) else Table.Combine(NumberWithinFile[Rows]),
+
+    AcrossFiles=Table.Group(OccurrenceRows,{"Fingerprint","Occurrence"},{
+        {"Canonical",each Table.First(Table.Sort(_,{{"Report Month Date",Order.Ascending},{"SourceFile",Order.Ascending}})),type record},
+        {"Source File Count",each List.Count(List.Distinct(List.RemoveNulls([SourceFile]))),Int64.Type},
+        {"Reported Count",each Table.RowCount(_),Int64.Type},
+        {"Reported Amount",each List.Sum(List.RemoveNulls([SystemAmount])),type number},
+        {"Reporting Month Dates",each List.Sort(List.Distinct(List.RemoveNulls([Report Month Date]))),type list},
+        {"Source Files",each Text.Combine(List.Sort(List.Distinct(List.RemoveNulls([SourceFile])))," | "),type text}
+    }),
+
+    ExpandCanonical=Table.ExpandRecordColumn(AcrossFiles,"Canonical",{"SourceFile","DocumentType","SAPDocumentType","GLAccount","Date de la transaction","Numréro de commande","Quantité","SystemAmount","AmountSource"},{"Canonical Source File","DocumentType","SAPDocumentType","GLAccount","Transaction Date","Numréro de commande","Deduplicated Quantity","Deduplicated Amount","AmountSource"}),
+    AddDupFlag=Table.AddColumn(ExpandCanonical,"Transaction Duplicate Flag",each if [Source File Count]>1 then "Repeated Across Files" else "Unique",type text),
+    AddDupAmount=Table.AddColumn(AddDupFlag,"Transaction Duplicate Amount",each [Reported Amount]-[Deduplicated Amount],type number),
+
+    FinalGroup=Table.Group(AddDupAmount,{"Numréro de commande","SAPDocumentType","GLAccount"},{
+        {"Total Quantité",each let v=List.RemoveNulls([Deduplicated Quantity]) in if List.IsEmpty(v) then null else List.Sum(v),type nullable number},
+        {"System Amount",each Number.Round(List.Sum(List.RemoveNulls([Deduplicated Amount])),2,RoundingMode.AwayFromZero),Currency.Type},
+        {"Reported System Amount",each Number.Round(List.Sum(List.RemoveNulls([Reported Amount])),2,RoundingMode.AwayFromZero),Currency.Type},
+        {"Duplicate Amount",each Number.Round(List.Sum(List.RemoveNulls([Transaction Duplicate Amount])),2,RoundingMode.AwayFromZero),Currency.Type},
+        {"First Transaction Date",each let v=List.RemoveNulls([Transaction Date]) in if List.IsEmpty(v) then null else List.Min(v),type nullable date},
+        {"Last Transaction Date",each let v=List.RemoveNulls([Transaction Date]) in if List.IsEmpty(v) then null else List.Max(v),type nullable date},
+        {"System Row Count",each List.Sum([Reported Count]),Int64.Type},
+        {"Deduplicated Row Count",each Table.RowCount(_),Int64.Type},
+        {"Duplicate Transaction Count",each Table.RowCount(Table.SelectRows(_,each [Transaction Duplicate Flag]="Repeated Across Files")),Int64.Type},
+        {"Source File Count",each List.Count(List.Distinct(List.Combine(List.Transform([Source Files],each if _=null or _="" then {} else Text.Split(_," | "))))),Int64.Type},
+        {"Report Month Dates",each List.Sort(List.Distinct(List.RemoveNulls(List.Combine([Reporting Month Dates])))),type list},
+        {"Duplicate Report Flag",each if List.Contains([Transaction Duplicate Flag],"Repeated Across Files") then "Duplicate Report Transaction" else "No Duplicate Report",type text},
+        {"Document Type",each Text.Combine(List.Sort(List.Distinct(List.RemoveNulls([DocumentType])))," | "),type text},
+        {"Amount Source",each Text.Combine(List.Sort(List.Distinct(List.RemoveNulls([AmountSource])))," | "),type text},
+        {"Source Files",each Text.Combine(List.Sort(List.Distinct(List.Combine(List.Transform([Source Files],each if _=null or _="" then {} else Text.Split(_," | ")))))," | "),type text},
+        {"Canonical Source Files",each Text.Combine(List.Sort(List.Distinct(List.RemoveNulls([Canonical Source File])))," | "),type text},
+
+///-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        {"Original Source File", each let v = List.RemoveNulls([Canonical Source File]) in if List.IsEmpty(v) then null else List.First(v),type text}
+
+    }),
+
+    AddReportingMonths=Table.AddColumn(FinalGroup,"Reporting Months",each Text.Combine(List.Transform([Report Month Dates],each MonthLabel(_))," | "),type text),
+    AddReportMonthCount=Table.AddColumn(AddReportingMonths,"Report Month Count",each List.Count([Report Month Dates]),Int64.Type),
+    RemoveMonthDateList=Table.RemoveColumns(AddReportMonthCount,{"Report Month Dates"}),
+    RenameKeys=Table.RenameColumns(RemoveMonthDateList,{{"Numréro de commande","KEY ID"},{"SAPDocumentType","SAP Document Type"},{"GLAccount","G/L Account"}},MissingField.Ignore),
+    AddKEYIDX=Table.AddColumn(RenameKeys,"KEYIDX",each [KEY ID]&"1"&[SAP Document Type]&[#"G/L Account"],type text),
+    AddIDREAL=Table.AddColumn(AddKEYIDX,"idreal",each [KEY ID]&[SAP Document Type]&[#"G/L Account"],type text),
+
+    // Commission (348919) sign flipped to match SAP. Sales (248601) unchanged.
+    AddSignFactor=Table.AddColumn(AddIDREAL,"Sign Factor",each if [#"G/L Account"]="348919" then -1 else 1,Int64.Type),
+    FlipAmounts=Table.ReplaceValue(AddSignFactor,each [Sign Factor],null,(v,f,n)=>if v=null then null else v*f,{"System Amount","Reported System Amount","Duplicate Amount"}),
+    RemoveSignFactor=Table.RemoveColumns(FlipAmounts,{"Sign Factor"}),
+
+    KeyCheck=Table.Group(RemoveSignFactor,{"KEYIDX"},{{"Count",each Table.RowCount(_),Int64.Type}}),
+    DuplicateKeys=Table.SelectRows(KeyCheck,each [Count]>1),
+    Validated=if not Table.IsEmpty(DuplicateKeys) then error "Refresh stopped because duplicate KEYIDX values remain. This prevents merge fanout." else RemoveSignFactor,
+    AddControlDifference=Table.AddColumn(Validated,"Duplicate Control Difference",each Number.Round([Reported System Amount]-[System Amount]-[Duplicate Amount],2,RoundingMode.AwayFromZero),Currency.Type),
+    AddControlResult=Table.AddColumn(AddControlDifference,"Duplicate Control Result",each if Number.Abs([Duplicate Control Difference])<=0.01 then "Control Passed" else "Control Failed",type text),
+
+    FinalOrder=Table.ReorderColumns(AddControlResult,{
+        "KEY ID","SAP Document Type","G/L Account","KEYIDX","idreal","Document Type","Total Quantité","System Amount",
+        "Reported System Amount","Duplicate Amount","Duplicate Report Flag","Duplicate Transaction Count","Reporting Months","Report Month Count",
+        "First Transaction Date","Last Transaction Date","System Row Count","Deduplicated Row Count","Source File Count","Amount Source","Original Source File",
+        "Canonical Source Files","Source Files","Duplicate Control Difference","Duplicate Control Result"
+    },MissingField.Ignore),
+    FinalTypes=Table.TransformColumnTypes(FinalOrder,{
+        {"KEY ID",type text},{"SAP Document Type",type text},{"G/L Account",type text},{"KEYIDX",type text},{"idreal",type text},
+        {"Total Quantité",type number},{"System Amount",Currency.Type},{"Reported System Amount",Currency.Type},{"Duplicate Amount",Currency.Type},
+        {"Duplicate Control Difference",Currency.Type},{"First Transaction Date",type date},{"Last Transaction Date",type date},
+        {"System Row Count",Int64.Type},{"Deduplicated Row Count",Int64.Type},{"Duplicate Transaction Count",Int64.Type},
+        {"Source File Count",Int64.Type},{"Report Month Count",Int64.Type}
+    }),
+    FinalSortedRows=Table.Sort(FinalTypes,{{"KEY ID",Order.Ascending},{"SAP Document Type",Order.Ascending},{"G/L Account",Order.Ascending}})
+in
+    FinalSortedRows
