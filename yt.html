@@ -19,6 +19,9 @@ VAR _CurrentFY =
         "0"
     )
 
+VAR _Tick  = UNICHAR(10003)
+VAR _Cross = UNICHAR(10007)
+
 VAR _Checks =
     DATATABLE(
         "Sort", INTEGER,
@@ -26,23 +29,20 @@ VAR _Checks =
         "VersionKey", STRING,
         "MinPeriod", INTEGER,
         {
-            {1, "BUD CC",        "BUDCC",         0},
-            {2, "BUD Mkt",       "BUD Marketing", 0},
-            {3, "P3F CC",        "P3FCC",         3},
-            {4, "P3F Mkt",       "P3F Marketing", 3},
-            {5, "P6F CC",        "P6FCC",         6},
-            {6, "P6F Mkt",       "P6F Marketing", 6},
-            {7, "P9F CC",        "P9FCC",         9},
-            {8, "P9F Mkt",       "P9F Marketing", 9}
+            {1, "BUD CC",   "BUDCC",         0},
+            {2, "Mkt BUD",  "BUD Marketing", 0},
+            {3, "P3F CC",   "P3FCC",         3},
+            {4, "Mkt P3F",  "P3F Marketing", 3},
+            {5, "P6F CC",   "P6FCC",         6},
+            {6, "Mkt P6F",  "P6F Marketing", 6},
+            {7, "P9F CC",   "P9FCC",         9},
+            {8, "Mkt P9F",  "P9F Marketing", 9}
         }
     )
 
-VAR _Required =
-    FILTER(_Checks, _MaxP > [MinPeriod])
-
 VAR _Loaded =
     ADDCOLUMNS(
-        _Required,
+        _Checks,
         "RowCount",
             VAR _k = [VersionKey]
             RETURN
@@ -70,30 +70,4 @@ VAR _Loaded =
 VAR _Status =
     ADDCOLUMNS(
         _Loaded,
-        "State",
-            IF(
-                [RowCount] = 0, "Missing",
-                IF([LoadedFY] <> _CurrentFY, "Wrong year", "OK")
-            )
-    )
-
-VAR _Missing =
-    COALESCE(
-        CONCATENATEX(FILTER(_Status, [State] = "Missing"), [Label], ", ", [Sort], ASC),
-        ""
-    )
-
-VAR _Wrong =
-    COALESCE(
-        CONCATENATEX(FILTER(_Status, [State] = "Wrong year"), [Label], ", ", [Sort], ASC),
-        ""
-    )
-
-RETURN
-    IF(
-        _Missing = "" && _Wrong = "",
-        "All required files loaded",
-        IF(_Missing <> "", "Missing: " & _Missing, "")
-            & IF(_Missing <> "" && _Wrong <> "", " | ", "")
-            & IF(_Wrong <> "", "Wrong year (need " & _CurrentFY & "): " & _Wrong, "")
-    )
+        "Message",
