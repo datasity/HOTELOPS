@@ -13,7 +13,6 @@ VAR _CurrentFY =
         'FS SPL (fact)'[TBL] = "BEAM"
     )
 
--- One row per file. MinPeriod = the file is required once MaxP is above it.
 VAR _Checks =
     DATATABLE(
         "Sort", INTEGER,
@@ -39,17 +38,21 @@ VAR _Loaded =
     ADDCOLUMNS(
         _Required,
         "RowCount",
-            CALCULATE(
-                COUNTROWS('FS SPL (fact)'),
-                REMOVEFILTERS('FS SPL (fact)'),
-                'FS SPL (fact)'[Version] = [VersionKey]
-            ),
+            VAR _k = [VersionKey]
+            RETURN
+                CALCULATE(
+                    COUNTROWS('FS SPL (fact)'),
+                    REMOVEFILTERS('FS SPL (fact)'),
+                    'FS SPL (fact)'[Version] = _k
+                ),
         "LoadedFY",
-            CALCULATE(
-                MAX('FS SPL (fact)'[TblFinYear]),
-                REMOVEFILTERS('FS SPL (fact)'),
-                'FS SPL (fact)'[Version] = [VersionKey]
-            )
+            VAR _k = [VersionKey]
+            RETURN
+                CALCULATE(
+                    MAX('FS SPL (fact)'[TblFinYear]),
+                    REMOVEFILTERS('FS SPL (fact)'),
+                    'FS SPL (fact)'[Version] = _k
+                )
     )
 
 VAR _Status =
