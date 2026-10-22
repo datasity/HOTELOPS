@@ -1,10 +1,6 @@
 // ==================== Sap (new) ====================
 let
-    // ---------- SharePoint source ----------
-    SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
-    FolderEnd = "/VEEPEE/SAP/",   // files must sit directly in this folder
-    RelevantDocumentTypes = {"XS", "XR"},
-    RelevantGLAccounts = {"248601", "348919"},
+    // ---------- Settings ----------
     SettleApprox = false,   // true = keys within 0.04 count as Settled
 
     CleanText = (Value as any) as nullable text =>
@@ -16,171 +12,33 @@ let
         in if CleanedValue = null or CleanedValue = "" then null
         else Text.Upper(Text.Remove(CleanedValue, {" ", Character.FromNumber(160)})),
 
-    ConvertToNumber = (Value as any) as nullable number =>
-        if Value = null then null
-        else if Value is number then Value
-        else
-            let
-                CleanedValue = Text.Replace(Text.Replace(Text.Replace(CleanText(Value), "€", ""), "£", ""), Character.FromNumber(160), ""),
-                FrenchNumber = try Number.FromText(CleanedValue, "fr-FR") otherwise null,
-                UKNumber = if FrenchNumber <> null then FrenchNumber else try Number.FromText(CleanedValue, "en-GB") otherwise null
-            in UKNumber,
+    // SAP lines come from Sap detail, so each SAP file is read in one place only
+    SAPLines = #"Sap detail",
 
-    ConvertToDate = (Value as any) as nullable date =>
-        if Value = null then null
-        else if Value is date then Value
-        else if Value is datetime or Value is datetimezone then Date.From(Value)
-        else if Value is number then try Date.From(Value) otherwise null
-        else
-            let
-                CleanedValue = CleanText(Value),
-                FrenchDate = try Date.FromText(CleanedValue, [Culture = "fr-FR"]) otherwise null,
-                UKDate = if FrenchDate <> null then FrenchDate else try Date.FromText(CleanedValue, [Culture = "en-GB"]) otherwise null
-            in UKDate,
-
-    EmptySAPTable =
-        #table(
-            type table
-            [
-                SourceFile = nullable text,
-                SourceObject = nullable text,
-                Reference = nullable text,
-                DocumentType = nullable text,
-                GLAccount = nullable text,
-                DocumentNumber = nullable text,
-                PostingDate = nullable date,
-                SAPAmount = nullable number,
-                SAPLocalAmount = nullable number,
-                LocalCurrency = nullable text,
-                DocumentCurrency = nullable text
-            ],
-            {}
-        ),
-
-    ProcessWorkbook = (FileContent as binary, FileName as text) as table =>
-        let
-            WorkbookAttempt = try Excel.Workbook(FileContent, null, true),
-            WorkbookData =
-                if WorkbookAttempt[HasError] then
-                    #table({"Item", "Kind", "Hidden", "Data"}, {})
-                else
-                    WorkbookAttempt[Value],
-
-            // Sheets only. Reading Tables too would double count if the download is formatted as a table.
-            VisibleObjects =
-                Table.SelectRows(
-                    WorkbookData,
-                    each [Kind] = "Sheet"
-                        and (try [Hidden] <> true otherwise true)
-                ),
-
-            ProcessedObjects =
-                Table.AddColumn(
-                    VisibleObjects,
-                    "ProcessedData",
-                    each
-                        let
-                            CurrentObject = CleanText([Item]),
-                            PromotedHeaders = try Table.PromoteHeaders([Data], [PromoteAllScalars = true]) otherwise [Data],
-                            CleanedHeaders = Table.TransformColumnNames(PromotedHeaders, each CleanText(_)),
-                            RequiredColumns =
-                                Table.SelectColumns(
-                                    CleanedHeaders,
-                                    {
-                                        "Reference",
-                                        "Document Type",
-                                        "G/L Account",
-                                        "Document Number",
-                                        "Posting Date",
-                                        "Amount in doc. curr.",
-                                        "Amount in local currency",
-                                        "Local Currency 2",
-                                        "Document currency"
-                                    },
-                                    MissingField.UseNull
-                                ),
-                            AddedSourceFile = Table.AddColumn(RequiredColumns, "SourceFile", each FileName, type text),
-                            AddedSourceObject = Table.AddColumn(AddedSourceFile, "SourceObject", each CurrentObject, type text),
-                            RenamedColumns =
-                                Table.RenameColumns(
-                                    AddedSourceObject,
-                                    {
-                                        {"Document Type", "DocumentType"},
-                                        {"G/L Account", "GLAccount"},
-                                        {"Document Number", "DocumentNumber"},
-                                        {"Posting Date", "PostingDate"},
-                                        {"Amount in doc. curr.", "SAP Amount"},
-                                        {"Amount in local currency", "SAPLocalAmount"},
-                                        {"Local Currency 2", "LocalCurrency"},
-                                        {"Document currency", "DocumentCurrency"}
-                                    },
-                                    MissingField.Ignore
-                                ),
-                            CleanedValues =
-                                Table.TransformColumns(
-                                    RenamedColumns,
-                                    {
-                                        {"Reference", each CleanKeyPart(_), type nullable text},
-                                        {"DocumentType", each CleanKeyPart(_), type nullable text},
-                                        {"GLAccount", each CleanKeyPart(_), type nullable text},
-                                        {"DocumentNumber", each CleanKeyPart(_), type nullable text},
-                                        {"PostingDate", each ConvertToDate(_), type nullable date},
-                                        {"SAP Amount", each ConvertToNumber(_), type nullable number},
-                                        {"SAPLocalAmount", each ConvertToNumber(_), type nullable number},
-                                        {"LocalCurrency", each CleanKeyPart(_), type nullable text},
-                                        {"DocumentCurrency", each CleanKeyPart(_), type nullable text}
-                                    }
-                                )
-                        in
-                            CleanedValues,
-                    type table
-                ),
-
-            ValidTables = List.Select(ProcessedObjects[ProcessedData], each try Value.Is(_, type table) otherwise false),
-            CombinedWorkbook = if List.IsEmpty(ValidTables) then EmptySAPTable else Table.Combine(ValidTables)
-        in
-            CombinedWorkbook,
-
-    FolderSource = SharePoint.Files(SiteURL, [ApiVersion = 15]),
-
-    FilteredFiles =
-        Table.SelectRows(
-            FolderSource,
-            each Text.EndsWith(Text.Lower([Folder Path]), Text.Lower(FolderEnd))
-                and List.Contains({".xlsx", ".xlsm", ".xlsb"}, Text.Lower([Extension]))
-                and not Text.StartsWith([Name], "~$")
-                and (try [Attributes]?[Hidden]? <> true otherwise true)
-        ),
-
-    SelectedFileColumns = Table.SelectColumns(FilteredFiles, {"Content", "Name", "Date modified"}, MissingField.UseNull),
-
-    AddedWorkbookData =
-        Table.AddColumn(
-            SelectedFileColumns,
-            "WorkbookData",
-            each try ProcessWorkbook([Content], [Name]) otherwise EmptySAPTable,
-            type table
-        ),
-
-    ValidWorkbookTables = List.Select(AddedWorkbookData[WorkbookData], each try Value.Is(_, type table) otherwise false),
-    CombinedSAPData = if List.IsEmpty(ValidWorkbookTables) then EmptySAPTable else Table.Combine(ValidWorkbookTables),
-
-    FilteredRelevantSAPRows =
-        Table.SelectRows(
-            CombinedSAPData,
-            each [Reference] <> null
-                and [Reference] <> ""
-                and List.Contains(RelevantDocumentTypes, [DocumentType])
-                and List.Contains(RelevantGLAccounts, [GLAccount])
-                and [SAP Amount] <> null
+    RenamedSAPLines =
+        Table.RenameColumns(
+            SAPLines,
+            {
+                {"SAP Line Doc Type", "DocumentType"},
+                {"SAP Line GL", "GLAccount"},
+                {"SAP Document Number", "DocumentNumber"},
+                {"SAP Posting Date", "PostingDate"},
+                {"SAP Line EUR", "SAP Amount"},
+                {"SAP Line GBP", "SAPLocalAmount"},
+                {"Local Currency", "LocalCurrency"},
+                {"Document Currency", "DocumentCurrency"},
+                {"SAP Source File", "SourceFile"},
+                {"SAP Source Object", "SourceObject"}
+            },
+            MissingField.Ignore
         ),
 
     AddedSAPKey =
-        Table.AddColumn(
-            FilteredRelevantSAPRows,
-            "KEYID",
-            each [Reference] & "1" & [DocumentType] & [GLAccount],
-            type text
+        Table.SelectColumns(
+            RenamedSAPLines,
+            {"Reference", "DocumentType", "GLAccount", "DocumentNumber", "PostingDate", "SAP Amount", "SAPLocalAmount",
+             "LocalCurrency", "DocumentCurrency", "SourceFile", "SourceObject", "KEYID"},
+            MissingField.UseNull
         ),
 
     SAPColumnsToRetain = List.RemoveItems(Table.ColumnNames(AddedSAPKey), {"KEYID", "SAP Amount", "SAPLocalAmount"}),
@@ -296,7 +154,7 @@ let
             }
         ),
 
-    // Commission sign is now flipped in Systemdata (new), so System Amount is used as it comes
+    // Commission sign is flipped in Systemdata (new), so System Amount is used as it comes
 
     // Key, doc type and GL taken from whichever side exists, so no row is blank
     AddedMatchKey =
@@ -489,16 +347,10 @@ let
             MissingField.Ignore
         ),
 
-    FinalSortedRows =
-        Table.Sort(
-            FinalColumnOrder,
-            {{"Last Transaction Date", Order.Descending}, {"KEYID", Order.Ascending}}
-        ),
-
     // Set proper data types (grouping and expanding lose them)
     TypedColumns =
         Table.TransformColumnTypes(
-            FinalSortedRows,
+            FinalColumnOrder,
             {
                 {"Match Key", type text},
                 {"Match Doc Type", type text},
@@ -535,7 +387,7 @@ in
 let
     // ---------- SharePoint source ----------
     SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
-    FolderEnd = "/VEEPEE/SYSTEMDOC/",   // files must sit directly in this folder
+    SubFolder = "SYSTEMDOC",   // VEEPEE/SYSTEMDOC, files must sit directly in this folder
     ValidExtensions = {".xlsx", ".xlsm", ".xlsb"},
 
      EmptyOutput = #table(
@@ -689,8 +541,15 @@ let
             tables=List.Select(added[Processed],each try Value.Is(_,type table) otherwise false)
         in if List.IsEmpty(tables) then EmptyOutput else Table.Combine(tables),
 
-    Source=SharePoint.Files(SiteURL, [ApiVersion = 15]),
-    Files=Table.SelectRows(Source,each Text.EndsWith(Text.Lower([Folder Path]), Text.Lower(FolderEnd)) and List.Contains(ValidExtensions,Text.Lower([Extension])) and not Text.StartsWith([Name],"~$") and (try [Attributes]?[Hidden]?<>true otherwise true)),
+    // Folder navigation (faster than listing every file on the site)
+    GetFolder = (parent as table, names as list) as table =>
+        let m = Table.SelectRows(parent, each List.Contains(List.Transform(names, Text.Upper), Text.Upper([Name])))
+        in if Table.IsEmpty(m) then error ("SharePoint folder not found: " & Text.Combine(names, " / ")) else m{0}[Content],
+    SiteRoot = SharePoint.Contents(SiteURL, [ApiVersion = 15]),
+    LibraryFolder = GetFolder(SiteRoot, {"Shared Documents", "Documents"}),
+    VeepeeFolder = GetFolder(LibraryFolder, {"VEEPEE"}),
+    Source=GetFolder(VeepeeFolder, {SubFolder}),
+    Files=Table.SelectRows(Source,each [Extension]<>null and List.Contains(ValidExtensions,Text.Lower([Extension])) and not Text.StartsWith([Name],"~$") and (try [Attributes]?[Hidden]?<>true otherwise true)),
     FileCols=Table.SelectColumns(Files,{"Content","Name","Date modified"},MissingField.UseNull),
     AddData=Table.AddColumn(FileCols,"Data",each try ProcessWorkbook([Content],[Name]) otherwise EmptyOutput,type table),
     AllData=if List.IsEmpty(AddData[Data]) then EmptyOutput else Table.Combine(AddData[Data]),
@@ -707,12 +566,14 @@ let
         Number.ToText(Number.Round([SystemAmount],2,RoundingMode.AwayFromZero),"0.00","en-GB"),CleanKey([AmountSource])
     },"|"),type text),
 
-    SortedForOccurrence=Table.Sort(AddFingerprint,{{"SourceFile",Order.Ascending},{"Fingerprint",Order.Ascending},{"Date de la transaction",Order.Ascending}}),
-    NumberWithinFile=Table.Group(SortedForOccurrence,{"SourceFile","Fingerprint"},{{"Rows",each Table.AddIndexColumn(_,"Occurrence",1,1,Int64.Type),type table}},GroupKind.Local),
+    // Identical lines in the same file are numbered 1,2,3 so genuine repeats are kept
+    NumberWithinFile=Table.Group(AddFingerprint,{"SourceFile","Fingerprint"},{{"Rows",each Table.AddIndexColumn(_,"Occurrence",1,1,Int64.Type),type table}}),
     OccurrenceRows=if Table.IsEmpty(NumberWithinFile) then #table({}, {}) else Table.Combine(NumberWithinFile[Rows]),
 
-    AcrossFiles=Table.Group(OccurrenceRows,{"Fingerprint","Occurrence"},{
-        {"Canonical",each Table.First(Table.Sort(_,{{"Report Month Date",Order.Ascending},{"SourceFile",Order.Ascending}})),type record},
+    // Earliest report month (then file name) is the copy that is kept
+    AddFileOrderKey=Table.AddColumn(OccurrenceRows,"FileOrderKey",each (if [Report Month Date]=null then "000000" else Date.ToText([Report Month Date],"yyyyMM"))&"|"&[SourceFile],type text),
+    AcrossFiles=Table.Group(AddFileOrderKey,{"Fingerprint","Occurrence"},{
+        {"Canonical",each Table.Min(_,"FileOrderKey"),type record},
         {"Source File Count",each List.Count(List.Distinct(List.RemoveNulls([SourceFile]))),Int64.Type},
         {"Reported Count",each Table.RowCount(_),Int64.Type},
         {"Reported Amount",each List.Sum(List.RemoveNulls([SystemAmount])),type number},
@@ -779,16 +640,16 @@ let
         {"System Row Count",Int64.Type},{"Deduplicated Row Count",Int64.Type},{"Duplicate Transaction Count",Int64.Type},
         {"Source File Count",Int64.Type},{"Report Month Count",Int64.Type}
     }),
-    FinalSortedRows=Table.Sort(FinalTypes,{{"KEY ID",Order.Ascending},{"SAP Document Type",Order.Ascending},{"G/L Account",Order.Ascending}})
+    FinalSortedRows=FinalTypes   // no sort needed, visuals sort themselves
 in
     FinalSortedRows
 
 
-// ==================== Sap detail  (no change) ====================
+// ==================== Sap detail ====================
 let
     // ---------- SharePoint source ----------
     SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
-    FolderEnd = "/VEEPEE/SAP/",   // files must sit directly in this folder
+    SubFolder = "SAP",   // VEEPEE/SAP, files must sit directly in this folder
     RelevantDocumentTypes = {"XS", "XR"},
     RelevantGLAccounts = {"248601", "348919"},
 
@@ -827,23 +688,33 @@ let
         let
             Workbook = Excel.Workbook(FileContent, null, true),
             Sheets = Table.SelectRows(Workbook, each [Kind] = "Sheet" and (try [Hidden] <> true otherwise true)),
-            Processed = List.Transform(Sheets[Data], (d) =>
+            Processed = List.Transform(Table.ToRecords(Sheets), (s) =>
                 let
+                    d = s[Data],
                     Promoted = Table.PromoteHeaders(d, [PromoteAllScalars = true]),
                     Named = Table.TransformColumnNames(Promoted, each CleanText(_)),
                     Selected = Table.SelectColumns(Named,
                         {"Reference", "Document Type", "G/L Account", "Document Number", "Posting Date",
                          "Amount in doc. curr.", "Amount in local currency", "Local Currency 2", "Document currency"},
                         MissingField.UseNull),
-                    WithFile = Table.AddColumn(Selected, "SAP Source File", each FileName, type text)
-                in WithFile)
+                    WithFile = Table.AddColumn(Selected, "SAP Source File", each FileName, type text),
+                    WithSheet = Table.AddColumn(WithFile, "SAP Source Object", each CleanText(s[Item]), type text)
+                in WithSheet)
         in
             Table.Combine(Processed),
 
-    FolderSource = SharePoint.Files(SiteURL, [ApiVersion = 15]),
-    FilteredFiles = Table.SelectRows(FolderSource, each Text.EndsWith(Text.Lower([Folder Path]), Text.Lower(FolderEnd))
+    // Folder navigation (faster than listing every file on the site)
+    GetFolder = (parent as table, names as list) as table =>
+        let m = Table.SelectRows(parent, each List.Contains(List.Transform(names, Text.Upper), Text.Upper([Name])))
+        in if Table.IsEmpty(m) then error ("SharePoint folder not found: " & Text.Combine(names, " / ")) else m{0}[Content],
+    SiteRoot = SharePoint.Contents(SiteURL, [ApiVersion = 15]),
+    LibraryFolder = GetFolder(SiteRoot, {"Shared Documents", "Documents"}),
+    VeepeeFolder = GetFolder(LibraryFolder, {"VEEPEE"}),
+    FolderSource = GetFolder(VeepeeFolder, {SubFolder}),
+    FilteredFiles = Table.SelectRows(FolderSource, each [Extension] <> null
         and List.Contains({".xlsx", ".xlsm", ".xlsb"}, Text.Lower([Extension]))
-        and not Text.StartsWith([Name], "~$")),
+        and not Text.StartsWith([Name], "~$")
+        and (try [Attributes]?[Hidden]? <> true otherwise true)),
     Combined = Table.Combine(List.Transform(Table.ToRecords(FilteredFiles), each ProcessWorkbook([Content], [Name]))),
 
     Cleaned = Table.TransformColumns(Combined, {
@@ -879,7 +750,7 @@ in
     Renamed
 
 
-// ==================== System detail  (no change) ====================
+// ==================== System detail ====================
 // ============================================================
 // System Detail (efficient version)
 // Veepee lines for drill-through. Identical lines in the same file are
@@ -889,7 +760,7 @@ in
 let
     // ---------- SharePoint source ----------
     SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
-    FolderEnd = "/VEEPEE/SYSTEMDOC/",   // files must sit directly in this folder
+    SubFolder = "SYSTEMDOC",   // VEEPEE/SYSTEMDOC, files must sit directly in this folder
     ValidExtensions = {".xlsx", ".xlsm", ".xlsb"},
 
     // Canonical name -> accepted header variants (case-insensitive)
@@ -1049,8 +920,15 @@ let
             if List.IsEmpty(processed) then EmptyLines else Table.Combine(processed),
 
     // ---------- Load ----------
-    Source = SharePoint.Files(SiteURL, [ApiVersion = 15]),
-    Files = Table.SelectRows(Source, each Text.EndsWith(Text.Lower([Folder Path]), Text.Lower(FolderEnd))
+    // Folder navigation (faster than listing every file on the site)
+    GetFolder = (parent as table, names as list) as table =>
+        let m = Table.SelectRows(parent, each List.Contains(List.Transform(names, Text.Upper), Text.Upper([Name])))
+        in if Table.IsEmpty(m) then error ("SharePoint folder not found: " & Text.Combine(names, " / ")) else m{0}[Content],
+    SiteRoot = SharePoint.Contents(SiteURL, [ApiVersion = 15]),
+    LibraryFolder = GetFolder(SiteRoot, {"Shared Documents", "Documents"}),
+    VeepeeFolder = GetFolder(LibraryFolder, {"VEEPEE"}),
+    Source = GetFolder(VeepeeFolder, {SubFolder}),
+    Files = Table.SelectRows(Source, each [Extension] <> null
         and List.Contains(ValidExtensions, Text.Lower([Extension]))
         and not Text.StartsWith([Name], "~$")),
     AllLines = Table.Combine(List.Transform(Table.ToRecords(Table.SelectColumns(Files, {"Content", "Name"})),
@@ -1130,33 +1008,29 @@ in
 let
     // SharePoint source
     SiteURL = "https://mnscorp.sharepoint.com/sites/training1s/",
-    TargetFolderPath = SiteURL & "Shared Documents/VEEPEE/Remittance/",
+    SubFolder = "Remittance",   // VEEPEE/Remittance
 
-    FolderSource = SharePoint.Files(
-        SiteURL,
-        [ApiVersion = 15]
-    ),
+    // Folder navigation (faster than listing every file on the site)
+    GetFolder = (parent as table, names as list) as table =>
+        let m = Table.SelectRows(parent, each List.Contains(List.Transform(names, Text.Upper), Text.Upper([Name])))
+        in if Table.IsEmpty(m) then error ("SharePoint folder not found: " & Text.Combine(names, " / ")) else m{0}[Content],
+    SiteRoot = SharePoint.Contents(SiteURL, [ApiVersion = 15]),
+    LibraryFolder = GetFolder(SiteRoot, {"Shared Documents", "Documents"}),
+    VeepeeFolder = GetFolder(LibraryFolder, {"VEEPEE"}),
+    FolderSource = GetFolder(VeepeeFolder, {SubFolder}),
 
     // Keep CSV files from the remittance folder
     FilteredFiles = Table.SelectRows(
         FolderSource,
         each
-            Text.Lower([Folder Path]) = Text.Lower(TargetFolderPath)
+            [Extension] <> null
             and Text.Lower([Extension]) = ".csv"
             and not Text.StartsWith([Name], "~$")
     ),
 
-    // Sort files by creation date
-    SortedFiles = Table.Sort(
-        FilteredFiles,
-        {
-            {"Date created", Order.Descending}
-        }
-    ),
-
     // Import each CSV file
     ImportedFiles = Table.AddColumn(
-        SortedFiles,
+        FilteredFiles,
         "Imported Data",
         each
             let
@@ -1293,7 +1167,7 @@ let
             type text
         ),
   AddSystemAmount = 
-// Remittance already shows commission with the SAP sign, same as Systemdata (new)
+// Commission already carries the SAP sign, same as Systemdata (new)
  
         Table.AddColumn(
             AddKEYID,
