@@ -1,6 +1,9 @@
+#"Added Old Amount" =
+    Table.AddColumn(#"Replaced Value2", "Old Amount", each [Amount], type number),
+
 #"Zeroed Stale Forecast" =
     Table.ReplaceValue(
-        #"Replaced Value2",
+        #"Added Old Amount",
         each [Amount],
         each if [FLAGGED] = "FAIL" then 0 else [Amount],
         Replacer.ReplaceValue,
