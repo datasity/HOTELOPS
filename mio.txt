@@ -1,111 +1,224 @@
-Selected Measure Marketing = -- ================================================================
--- SELECTED MEASURE MARKETING
--- ================================================================
--- PURPOSE:
---   Main calculation measure for the Marketing matrix.
---   Switches on Measure Selector[Measure Ref] to return the correct
---   amount for each column (Actual, v LY, Budget, YTD etc).
---
--- ROW TYPE LOGIC:
---   Context is read from Marketing PL Structure calculated table:
---   - Detail    = IO Name row. Filters fact by IO Name and CCs for headline.
---   - Others    = Residual row. Total CC amount MINUS all IO-mapped amounts.
---                 Catches Cost Centre-only postings with no IO allocation.
---   - Subtotal  = Headline total. All amounts for all CCs under that headline.
---   - GrandTotal= Total FS Marketing. All CCs across all headlines.
---
--- OTHERS LOGIC:
---   _MappedIOs = all IO Names that have explicit IO rows under the same CCs.
---   _TotalCC   = full CC total regardless of IO assignment.
---   Others = _TotalCC - IO-mapped amounts = residual/catch-all bucket.
---   This ensures Others + all IO rows = Subtotal (no double counting).
---
--- MAINTENANCE:
---   If a new Marketing Headline is added:
---     1. Add to Marketing Dataflow entity (Headline + GL)
---     2. Add row to _HeadlineMeta DATATABLE in Marketing PL Structure partition
---   If Others label needs changing: update _HeadlineMeta Others Label column.
---   If Subtotal label needs changing: update _HeadlineMeta Subtotal Label column.
---   Year Flags must match fact table exactly (TY/LY/LY1/BUD/P3F/P6F/P9F).
--- ================================================================
-VAR _Ref      = SELECTEDVALUE('Measure Selector'[Measure Ref], "")
-VAR _P        = [_Selected Period]
-VAR _S        = [_Scale]
-VAR _RowType  = SELECTEDVALUE('Marketing PL Structure'[Row Type], "")
-VAR _IOFilter = SELECTEDVALUE('Marketing PL Structure'[IO Filter], "")
-VAR _Headline = SELECTEDVALUE('Marketing PL Structure'[Marketing Headline], "")
-VAR _IsGrand  = _RowType = "GrandTotal"
-VAR _IsYTD    = RIGHT(_Ref, 3) = "YTD"
-VAR _IsVariance = _Ref IN {"v LY","v LY1","v Budget","v P3F","v P6F","v P9F","v LY YTD","v LY1 YTD","v Budget YTD","v P3F YTD","v P6F YTD","v P9F YTD"}
-////////////////////////////////////
-VAR _SelectedFY =
-    MAX('FS SPL (fact)'[FinYear])
-
-VAR _IsForecastMeasure =
-    _Ref IN {
-        "P3 Forecast",
-        "P6 Forecast",
-        "P9 Forecast",
-        "P3 Forecast YTD",
-        "P6 Forecast YTD",
-        "P9 Forecast YTD",
-        "v P3F",
-        "v P6F",
-        "v P9F",
-        "v P3F YTD",
-        "v P6F YTD",
-        "v P9F YTD"
-    }
-
-///////////////////////////////////
-
--- CCs in scope: all CCs for grand total, headline CCs otherwise
-VAR _CCsHeadline = SELECTCOLUMNS(FILTER(ALL('Marketing'), 'Marketing'[Marketing Headline] = _Headline), "CC", 'Marketing'[GL])
-VAR _CCsAll      = SELECTCOLUMNS(ALL('Marketing'), "CC", 'Marketing'[GL])
--- Mapped IOs for headline (used by Others exclusion logic)
-VAR _MappedIOsH =
-    SELECTCOLUMNS(
-        FILTER(
-            SUMMARIZE(CALCULATETABLE('FS SPL (fact)', 'FS SPL (fact)'[SPL Line source]="IO", TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), 'FS SPL (fact)'[IO Name]),
-            NOT ISBLANK('FS SPL (fact)'[IO Name])
-        ), "IO", 'FS SPL (fact)'[IO Name])
--- Mapped IOs for grand total
-VAR _MappedIOsAll =
-    SELECTCOLUMNS(
-        FILTER(
-            SUMMARIZE(CALCULATETABLE('FS SPL (fact)', 'FS SPL (fact)'[SPL Line source]="IO", TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), 'FS SPL (fact)'[IO Name]),
-            NOT ISBLANK('FS SPL (fact)'[IO Name])
-        ), "IO", 'FS SPL (fact)'[IO Name])
--- Resolve Year Flags for TY and comparison
-VAR _YF_TY = SWITCH(_Ref,
-    "Actual","TY","Actual LY","LY","Actual LY1","LY1","Budget","BUD",
-    "P3 Forecast","P3F","P6 Forecast","P6F","P9 Forecast","P9F",
-    "Actual YTD","TY","Actual LY YTD","LY","Actual LY1 YTD","LY1","Budget YTD","BUD",
-    "P3 Forecast YTD","P3F","P6 Forecast YTD","P6F","P9 Forecast YTD","P9F",
-    "v LY","TY","v LY1","TY","v Budget","TY","v P3F","TY","v P6F","TY","v P9F","TY",
-    "v LY YTD","TY","v LY1 YTD","TY","v Budget YTD","TY","v P3F YTD","TY","v P6F YTD","TY","v P9F YTD","TY",""
-)
-VAR _YF_CMP = SWITCH(_Ref,
-    "v LY","LY","v LY1","LY1","v Budget","BUD","v P3F","P3F","v P6F","P6F","v P9F","P9F",
-    "v LY YTD","LY","v LY1 YTD","LY1","v Budget YTD","BUD",
-    "v P3F YTD","P3F","v P6F YTD","P6F","v P9F YTD","P9F",""
-)
--- Pre-calculate all amounts needed
-VAR _Calc_Detail_TY    = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
+Measure Selector = -- ============================================================
+-- MEASURE SELECTOR TABLE
+-- FIX: Measure Name prefixed with REPT(UNICHAR(8203), Sort)
+--      Makes each Measure Name globally unique for PBI Service.
+--      UNICHAR(8203) = Zero Width Space, invisible in matrix columns.
+--      Sort is already unique per row so prefix is unique per row.
+-- Is Visible logic: CUMULATIVE forecast visibility
+--   _MaxP <= 3  : no forecasts shown
+--   _MaxP <= 6  : P3F visible
+--   _MaxP <= 9  : P3F + P6F visible
+--   _MaxP >  9  : P3F + P6F + P9F all visible
+-- ============================================================
 
 
-VAR _Calc_Detail_CMP   = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
-VAR _TC_H_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
-VAR _TC_H_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
-VAR _IA_H_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])))
-VAR _IA_H_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])))
-VAR _TC_All_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])))
-VAR _TC_All_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])))
-VAR _AmtTY  = SWITCH(_RowType, "Detail",_Calc_Detail_TY, "Others",_TC_H_TY-_IA_H_TY, "Subtotal",_TC_H_TY, "GrandTotal",_TC_All_TY, BLANK())
-VAR _AmtCMP = IF(NOT _IsVariance, 0, SWITCH(_RowType, "Detail",_Calc_Detail_CMP, "Others",_TC_H_CMP-_IA_H_CMP, "Subtotal",_TC_H_CMP, "GrandTotal",_TC_All_CMP, 0))
-VAR _Result = IF(_IsVariance, _AmtTY - _AmtCMP, _AmtTY)
+VAR PLABEL = VALUE(SELECTEDVALUE('Dim Period'[Period]))
+
+-- Check if each forecast file has data loaded
+VAR _P3FExists =
+   CALCULATE(
+       COUNTROWS('FS SPL (fact)'),
+       ALL('FS SPL (fact)'),
+       'FS SPL (fact)'[Year Flag] = "P3F"
+   ) > 0
+
+
+VAR _P6FExists =
+   CALCULATE(
+       COUNTROWS('FS SPL (fact)'),
+       ALL('FS SPL (fact)'),
+       'FS SPL (fact)'[Year Flag] = "P6F"
+   ) > 0
+
+
+VAR _P9FExists =
+   CALCULATE(
+       COUNTROWS('FS SPL (fact)'),
+       ALL('FS SPL (fact)'),
+       'FS SPL (fact)'[Year Flag] = "P9F"
+   ) > 0
+
+
+VAR _MaxP =
+    CALCULATE(
+        MAX('FS SPL (fact)'[Period]),
+        ALL('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "BEAM"
+    )
+
+-- BOTH conditions must be true:
+-- 1. MaxP has reached the threshold
+-- 2. The forecast file actually exists
+
+
+VAR _VisibleForecasts =
+    SWITCH(TRUE(),
+    
+        _MaxP <= 3  , "",
+        _MaxP <= 6 , "P3F",
+       _MaxP <= 9 , "P3F|P6F",
+        "P3F|P6F|P9F"
+    )
+
+/*
+
+VAR PLABEL =
+    VALUE(SELECTEDVALUE('Dim Period'[Period]))
+
+VAR _MaxP =
+    CALCULATE(
+        MAXX(
+            'FS SPL (fact)',
+            VALUE('FS SPL (fact)'[Period])
+        ),
+        ALL('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "BEAM"
+    )
+
+VAR _P3FExists =
+    CALCULATE(
+        COUNTROWS('FS SPL (fact)'),
+        ALL('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "P3F"
+    ) > 0
+
+VAR _P6FExists =
+    CALCULATE(
+        COUNTROWS('FS SPL (fact)'),
+        ALL('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "P6F"
+    ) > 0
+
+VAR _P9FExists =
+    CALCULATE(
+        COUNTROWS('FS SPL (fact)'),
+        ALL('FS SPL (fact)'),
+        'FS SPL (fact)'[TBL] = "P9F"
+    ) > 0
+
+VAR _VisibleForecasts =
+    SWITCH(
+        TRUE(),
+
+        ISBLANK(PLABEL) || ISBLANK(_MaxP), "",
+
+        _MaxP <= 3 && PLABEL <= 3, "",
+
+        _MaxP <= 6 && PLABEL <= 6 && _P3FExists, "P3F",
+
+        _MaxP <= 9 && PLABEL <= 9 && _P6FExists, "P3F|P6F",
+
+        _MaxP > 9 && _P9FExists, "P3F|P6F|P9F",
+
+        ""
+    )
+
+
+*/
+
+VAR _Rows =
+    DATATABLE(
+        "Measure Name",  STRING,
+        "Measure Ref",   STRING,
+        "Sort",          INTEGER,
+        "View ID",       INTEGER,
+        "Group",         STRING,
+        "Forecast Flag", STRING,
+        {
+            -- MONTH VIEW (View ID = 1)
+            {"Actual",         "Actual",          10,  1, "Actuals",  "ALL"},
+            {"v LY",           "v LY",             20,  1, "Actuals",  "ALL"},
+            {"v LY1 ",          "v LY1",            30,  1, "Actuals",  "ALL"},
+            {"v Budget",       "v Budget",          60,  1, "Budget",   "ALL"},
+            {"v P3F",          "v P3F",             90,  1, "Forecast", "P3F"},
+            {"v P6F",          "v P6F",             110, 1, "Forecast", "P6F"},
+            {"v P9F",          "v P9F",             130, 1, "Forecast", "P9F"},
+            -- PROGRESSIVE VIEW (View ID = 2)
+            {"Actual YTD",     "Actual YTD",        110, 2, "Actuals",  "ALL"},
+            {"v LY YTD",       "v LY YTD",          120, 2, "Actuals",  "ALL"},
+            {"v LY1 YTD",      "v LY1 YTD",         130, 2, "Actuals",  "ALL"},
+            {"v Budget YTD",   "v Budget YTD",       160, 2, "Budget",   "ALL"},
+            {" ",              "_Space",             170, 2, "Space",    "ALL"},
+            {"v P3F YTD",      "v P3F YTD",         190, 2, "Forecast", "P3F"},
+            {"v P6F YTD",      "v P6F YTD",         210, 2, "Forecast", "P6F"},
+            {"v P9F YTD",      "v P9F YTD",         230, 2, "Forecast", "P9F"},
+            -- ALL VIEW (View ID = 4)
+            {"Actual",         "Actual",            210, 4, "Actuals",  "ALL"},
+            {"Actual LY",      "Actual LY",         220, 4, "Actuals",  "ALL"},
+            {"v LY",           "v LY",              230, 4, "Actuals",  "ALL"},
+            {"Actual LY1",     "Actual LY1",        240, 4, "Actuals",  "ALL"},
+            {"v LY1",          "v LY1",             250, 4, "Actuals",  "ALL"},
+            {" ",              "_Space",             260, 4, "Space",    "ALL"},
+            {"Budget",         "Budget",             270, 4, "Budget",   "ALL"},
+            {"v Budget",       "v Budget",           280, 4, "Budget",   "ALL"},
+            {"",               "_Space",             290, 4, "Space",    "ALL"},
+            {"P3F",            "P3 Forecast",        300, 4, "Forecast", "P3F"},
+            {"v P3F",          "v P3F",              310, 4, "Forecast", "P3F"},
+            {"P6F",            "P6 Forecast",        320, 4, "Forecast", "P6F"},
+            {"v P6F",          "v P6F",              330, 4, "Forecast", "P6F"},
+            {"P9F",            "P9 Forecast",        340, 4, "Forecast", "P9F"},
+            {"v P9F",          "v P9F",              350, 4, "Forecast", "P9F"},
+            {"",               "_Space",             360, 4, "Space",    "ALL"},
+            {"Actual YTD",     "Actual YTD",         370, 4, "Actuals",  "ALL"},
+            {"Actual LY YTD",  "Actual LY YTD",      380, 4, "Actuals",  "ALL"},
+            {"v LY YTD",       "v LY YTD",           390, 4, "Actuals",  "ALL"},
+            {"Actual LY1 YTD", "Actual LY1 YTD",     400, 4, "Actuals",  "ALL"},
+            {"v LY1 YTD",      "v LY1 YTD",          410, 4, "Actuals",  "ALL"},
+            {"",               "_Space",             420, 4, "Space",    "ALL"},
+            {"Budget YTD",     "Budget YTD",          430, 4, "Budget",   "ALL"},
+            {"v Budget YTD",   "v Budget YTD",        440, 4, "Budget",   "ALL"},
+            {"",               "_Space",             450, 4, "Space",    "ALL"},
+            {"P3F YTD",        "P3 Forecast YTD",    460, 4, "Forecast", "P3F"},
+            {"v P3F YTD",      "v P3F YTD",          470, 4, "Forecast", "P3F"},
+            {"P6F YTD",        "P6 Forecast YTD",    480, 4, "Forecast", "P6F"},
+            {"v P6F YTD",      "v P6F YTD",          490, 4, "Forecast", "P6F"},
+            {"P9F YTD",        "P9 Forecast YTD",    500, 4, "Forecast", "P9F"},
+            {"v P9F YTD",      "v P9F YTD",          510, 4, "Forecast", "P9F"},
+            -- COMBINED VIEW (View ID = 3)
+            {"Actual",         "Actual",             610, 3, "Actuals",  "ALL"},
+            {"v LY",           "v LY",               620, 3, "Actuals",  "ALL"},
+            {"v LY1 ",          "v LY1",              630, 3, "Actuals",  "ALL"},
+            {"v Budget",       "v Budget",            660, 3, "Budget",   "ALL"},
+            {"v P3F",          "v P3F",               690, 3, "Forecast", "P3F"},
+            {"v P6F",          "v P6F",               710, 3, "Forecast", "P6F"},
+            {"v P9F",          "v P9F",               730, 3, "Forecast", "P9F"},
+            {"Actual YTD",     "Actual YTD",          740, 3, "Actuals",  "ALL"},
+            {"",               "_Space",              745, 3, "Space",    "ALL"},
+            {"v LY YTD",       "v LY YTD",            750, 3, "Actuals",  "ALL"},
+            {"v LY1 YTD",      "v LY1 YTD",           760, 3, "Actuals",  "ALL"},
+            {"v Budget YTD",   "v Budget YTD",        770, 3, "Budget",   "ALL"},
+            {"",               "_Space",              780, 3, "Space",    "ALL"},
+            {"v P3F YTD",      "v P3F YTD",           790, 3, "Forecast", "P3F"},
+            {"v P6F YTD",      "v P6F YTD",           800, 3, "Forecast", "P6F"},
+            {"v P9F YTD",      "v P9F YTD",           810, 3, "Forecast", "P9F"}
+        }
+    )
+
+VAR _WithVisibility =
+    ADDCOLUMNS(
+        _Rows,
+        "Is Visible",
+        IF(
+            [Forecast Flag] = "ALL"
+            || CONTAINSSTRING(_VisibleForecasts, [Forecast Flag]),
+            1,
+            0
+        )
+    )
+
+-- Apply UNICHAR(8203) prefix keyed to Sort to make Measure Name globally unique
+-- Invisible in matrix column headers. Satisfies PBI Service one-to-one sort rule.
 RETURN
- IF(_RowType = "" || _YF_TY = "", BLANK(), IF(ISBLANK(_Result), 0, DIVIDE(_Result, _S, 0)))
+    SELECTCOLUMNS(
+        _WithVisibility,
+        "Measure Name",  REPT(UNICHAR(8203), [Sort]) & [Measure Name],
+        "Measure Ref",   [Measure Ref],
+        "Sort",          [Sort],
+        "View ID",       [View ID],
+        "Group",         [Group],
+        "Forecast Flag", [Forecast Flag],
+        "Is Visible",    [Is Visible]
+    )
 
 
 
@@ -113,6 +226,8 @@ RETURN
 
 
 
+
+NEW VIEW FOR THE THREE P3F TO P9F  AND THIS WOULD ALSO AFFECT VIEW SELECTOR
 
 • Actual Month
 • P6F
@@ -126,11 +241,32 @@ RETURN
 • vs Budget YTD
 
 
-would it be possible to switch the order of the columns so that it shows 
-Actual
-P6F
-vs P6F
-Budget
-vs budget
-please?  no worries if too tricky
 
+View Selector = -- ============================================================
+-- VIEW SELECTOR TABLE
+-- Purpose: Drives the view slicer on the matrix page
+-- User picks one view (single select) which controls
+-- which columns appear in the matrix via Measure Selector
+--
+-- Views:
+--   1 = Basic View      - single period actuals + budget + forecast
+--   2 = Progressive View - YTD only, same sequence as Basic
+--   3 = All View        - full set single period then YTD
+--
+-- HOW TO USE:
+--   1. Add this table as a slicer on the matrix page
+--   2. Use View Name column as the slicer field
+--   3. Set slicer to single select
+--   4. The Measure Selector table filters by View ID
+-- ============================================================
+DATATABLE(
+    "View ID",   INTEGER,
+    "View Name", STRING,
+    "View Sort", INTEGER,
+    {
+        {1, "Current Month",1},
+        {2, "Progressive", 2},
+        {3, "Combined",    3},
+         {4, "All",        4}
+    }
+)
