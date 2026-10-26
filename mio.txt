@@ -1,5 +1,4 @@
 EVALUATE
-VAR _P = 2
 VAR _Headlines = DISTINCT(SELECTCOLUMNS('Marketing', "Headline", 'Marketing'[Marketing Headline]))
 RETURN
 GENERATE(
@@ -26,8 +25,7 @@ GENERATE(
         ADDCOLUMNS(
             CALCULATETABLE(
                 'FS SPL (fact)',
-                TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre]),
-                'FS SPL (fact)'[Period] = _P
+                TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
             ),
             "RowType",
                 IF(NOT ISBLANK('FS SPL (fact)'[IO Name]) && 'FS SPL (fact)'[IO Name] IN _Mapped,
@@ -37,13 +35,16 @@ GENERATE(
     SUMMARIZE(
         _Rows,
         [RowType],
+        'FS SPL (fact)'[Period],
         'FS SPL (fact)'[IO Name],
         'FS SPL (fact)'[IO],
         'FS SPL (fact)'[Cost Centre],
         'FS SPL (fact)'[GL],
         "Actual", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "TY"),
         "Budget", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "BUD"),
-        "P6F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P6F")
+        "P3F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P3F"),
+        "P6F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P6F"),
+        "P9F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P9F")
     )
 )
-ORDER BY [Headline], [RowType], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[IO], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
+ORDER BY [Headline], [RowType], 'FS SPL (fact)'[Period], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
