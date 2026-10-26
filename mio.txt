@@ -1,27 +1,28 @@
-Measure Selector = -- ============================================================
+-- ============================================================
 -- MEASURE SELECTOR TABLE
--- FIX: Measure Name prefixed with REPT(UNICHAR(8203), Sort)
+-- Measure Name prefixed with REPT(UNICHAR(8203), Sort)
 --      Makes each Measure Name globally unique for PBI Service.
 --      UNICHAR(8203) = Zero Width Space, invisible in matrix columns.
---      Sort is already unique per row so prefix is unique per row.
+--      Sort must be unique per row so the prefix is unique per row.
 -- Is Visible logic: CUMULATIVE forecast visibility
 --   _MaxP <= 3  : no forecasts shown
 --   _MaxP <= 6  : P3F visible
 --   _MaxP <= 9  : P3F + P6F visible
 --   _MaxP >  9  : P3F + P6F + P9F all visible
+-- VIEW IDs:
+--   1 = Current Month, 2 = Progressive, 3 = Combined, 4 = All
+--   5 = P3F View, 6 = P6F View, 7 = P9F View
+-- NEW VIEWS USE SORT 910+ (never reuse a Sort number)
 -- ============================================================
-
 
 VAR PLABEL = VALUE(SELECTEDVALUE('Dim Period'[Period]))
 
--- Check if each forecast file has data loaded
 VAR _P3FExists =
    CALCULATE(
        COUNTROWS('FS SPL (fact)'),
        ALL('FS SPL (fact)'),
        'FS SPL (fact)'[Year Flag] = "P3F"
    ) > 0
-
 
 VAR _P6FExists =
    CALCULATE(
@@ -30,14 +31,12 @@ VAR _P6FExists =
        'FS SPL (fact)'[Year Flag] = "P6F"
    ) > 0
 
-
 VAR _P9FExists =
    CALCULATE(
        COUNTROWS('FS SPL (fact)'),
        ALL('FS SPL (fact)'),
        'FS SPL (fact)'[Year Flag] = "P9F"
    ) > 0
-
 
 VAR _MaxP =
     CALCULATE(
@@ -46,75 +45,13 @@ VAR _MaxP =
         'FS SPL (fact)'[TBL] = "BEAM"
     )
 
--- BOTH conditions must be true:
--- 1. MaxP has reached the threshold
--- 2. The forecast file actually exists
-
-
 VAR _VisibleForecasts =
     SWITCH(TRUE(),
-    
-        _MaxP <= 3  , "",
-        _MaxP <= 6 , "P3F",
-       _MaxP <= 9 , "P3F|P6F",
+        _MaxP <= 3, "",
+        _MaxP <= 6, "P3F",
+        _MaxP <= 9, "P3F|P6F",
         "P3F|P6F|P9F"
     )
-
-/*
-
-VAR PLABEL =
-    VALUE(SELECTEDVALUE('Dim Period'[Period]))
-
-VAR _MaxP =
-    CALCULATE(
-        MAXX(
-            'FS SPL (fact)',
-            VALUE('FS SPL (fact)'[Period])
-        ),
-        ALL('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "BEAM"
-    )
-
-VAR _P3FExists =
-    CALCULATE(
-        COUNTROWS('FS SPL (fact)'),
-        ALL('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "P3F"
-    ) > 0
-
-VAR _P6FExists =
-    CALCULATE(
-        COUNTROWS('FS SPL (fact)'),
-        ALL('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "P6F"
-    ) > 0
-
-VAR _P9FExists =
-    CALCULATE(
-        COUNTROWS('FS SPL (fact)'),
-        ALL('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "P9F"
-    ) > 0
-
-VAR _VisibleForecasts =
-    SWITCH(
-        TRUE(),
-
-        ISBLANK(PLABEL) || ISBLANK(_MaxP), "",
-
-        _MaxP <= 3 && PLABEL <= 3, "",
-
-        _MaxP <= 6 && PLABEL <= 6 && _P3FExists, "P3F",
-
-        _MaxP <= 9 && PLABEL <= 9 && _P6FExists, "P3F|P6F",
-
-        _MaxP > 9 && _P9FExists, "P3F|P6F|P9F",
-
-        ""
-    )
-
-
-*/
 
 VAR _Rows =
     DATATABLE(
@@ -190,7 +127,43 @@ VAR _Rows =
             {"",               "_Space",              780, 3, "Space",    "ALL"},
             {"v P3F YTD",      "v P3F YTD",           790, 3, "Forecast", "P3F"},
             {"v P6F YTD",      "v P6F YTD",           800, 3, "Forecast", "P6F"},
-            {"v P9F YTD",      "v P9F YTD",           810, 3, "Forecast", "P9F"}
+            {"v P9F YTD",      "v P9F YTD",           810, 3, "Forecast", "P9F"},
+            -- P3F VIEW (View ID = 5)
+            {"Actual",         "Actual",             910, 5, "Actuals",  "ALL"},
+            {"P3F",            "P3 Forecast",        920, 5, "Forecast", "P3F"},
+            {"v P3F",          "v P3F",              930, 5, "Forecast", "P3F"},
+            {"Budget",         "Budget",             940, 5, "Budget",   "ALL"},
+            {"v Budget",       "v Budget",           950, 5, "Budget",   "ALL"},
+            {"",               "_Space",             960, 5, "Space",    "ALL"},
+            {"Actual YTD",     "Actual YTD",         970, 5, "Actuals",  "ALL"},
+            {"P3F YTD",        "P3 Forecast YTD",    980, 5, "Forecast", "P3F"},
+            {"v P3F YTD",      "v P3F YTD",          990, 5, "Forecast", "P3F"},
+            {"Budget YTD",     "Budget YTD",        1000, 5, "Budget",   "ALL"},
+            {"v Budget YTD",   "v Budget YTD",      1010, 5, "Budget",   "ALL"},
+            -- P6F VIEW (View ID = 6)
+            {"Actual",         "Actual",            1110, 6, "Actuals",  "ALL"},
+            {"P6F",            "P6 Forecast",       1120, 6, "Forecast", "P6F"},
+            {"v P6F",          "v P6F",             1130, 6, "Forecast", "P6F"},
+            {"Budget",         "Budget",            1140, 6, "Budget",   "ALL"},
+            {"v Budget",       "v Budget",          1150, 6, "Budget",   "ALL"},
+            {"",               "_Space",            1160, 6, "Space",    "ALL"},
+            {"Actual YTD",     "Actual YTD",        1170, 6, "Actuals",  "ALL"},
+            {"P6F YTD",        "P6 Forecast YTD",   1180, 6, "Forecast", "P6F"},
+            {"v P6F YTD",      "v P6F YTD",         1190, 6, "Forecast", "P6F"},
+            {"Budget YTD",     "Budget YTD",        1200, 6, "Budget",   "ALL"},
+            {"v Budget YTD",   "v Budget YTD",      1210, 6, "Budget",   "ALL"},
+            -- P9F VIEW (View ID = 7)
+            {"Actual",         "Actual",            1310, 7, "Actuals",  "ALL"},
+            {"P9F",            "P9 Forecast",       1320, 7, "Forecast", "P9F"},
+            {"v P9F",          "v P9F",             1330, 7, "Forecast", "P9F"},
+            {"Budget",         "Budget",            1340, 7, "Budget",   "ALL"},
+            {"v Budget",       "v Budget",          1350, 7, "Budget",   "ALL"},
+            {"",               "_Space",            1360, 7, "Space",    "ALL"},
+            {"Actual YTD",     "Actual YTD",        1370, 7, "Actuals",  "ALL"},
+            {"P9F YTD",        "P9 Forecast YTD",   1380, 7, "Forecast", "P9F"},
+            {"v P9F YTD",      "v P9F YTD",         1390, 7, "Forecast", "P9F"},
+            {"Budget YTD",     "Budget YTD",        1400, 7, "Budget",   "ALL"},
+            {"v Budget YTD",   "v Budget YTD",      1410, 7, "Budget",   "ALL"}
         }
     )
 
@@ -206,8 +179,6 @@ VAR _WithVisibility =
         )
     )
 
--- Apply UNICHAR(8203) prefix keyed to Sort to make Measure Name globally unique
--- Invisible in matrix column headers. Satisfies PBI Service one-to-one sort rule.
 RETURN
     SELECTCOLUMNS(
         _WithVisibility,
@@ -219,54 +190,3 @@ RETURN
         "Forecast Flag", [Forecast Flag],
         "Is Visible",    [Is Visible]
     )
-
-
-
-
-
-
-
-
-NEW VIEW FOR THE THREE P3F TO P9F  AND THIS WOULD ALSO AFFECT VIEW SELECTOR
-
-• Actual Month
-• P6F
-• vs P6F
-• Budget
-• vs Budget
-• YTD
-• P6F YTD
-• vs P6F YTD
-• Budget YTD
-• vs Budget YTD
-
-
-
-View Selector = -- ============================================================
--- VIEW SELECTOR TABLE
--- Purpose: Drives the view slicer on the matrix page
--- User picks one view (single select) which controls
--- which columns appear in the matrix via Measure Selector
---
--- Views:
---   1 = Basic View      - single period actuals + budget + forecast
---   2 = Progressive View - YTD only, same sequence as Basic
---   3 = All View        - full set single period then YTD
---
--- HOW TO USE:
---   1. Add this table as a slicer on the matrix page
---   2. Use View Name column as the slicer field
---   3. Set slicer to single select
---   4. The Measure Selector table filters by View ID
--- ============================================================
-DATATABLE(
-    "View ID",   INTEGER,
-    "View Name", STRING,
-    "View Sort", INTEGER,
-    {
-        {1, "Current Month",1},
-        {2, "Progressive", 2},
-        {3, "Combined",    3},
-         {4, "All",        4}
-    }
-)
