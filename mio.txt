@@ -1,26 +1,30 @@
--- ============================================================
--- VIEW SELECTOR TABLE
--- Drives the view slicer on the matrix page (single select).
--- The Measure Selector filters by View ID.
---   1 = Current Month
---   2 = Progressive (YTD only)
---   3 = Combined
---   4 = All
---   5 = P3F View: Actual, P3F, v P3F, Budget, v Budget, then YTD set
---   6 = P6F View: same layout for P6F
---   7 = P9F View: same layout for P9F
--- ============================================================
-DATATABLE(
-    "View ID",   INTEGER,
-    "View Name", STRING,
-    "View Sort", INTEGER,
-    {
-        {1, "Current Month", 1},
-        {2, "Progressive",   2},
-        {3, "Combined",      3},
-        {4, "All",           4},
-        {5, "P3F View",      5},
-        {6, "P6F View",      6},
-        {7, "P9F View",      7}
-    }
-)
+EVALUATE
+VAR _TY = "TY"
+VAR _Base =
+    FILTER(
+        SUMMARIZECOLUMNS(
+            'FS SPL (fact)'[FinYear],
+            'FS SPL (fact)'[Cost Centre],
+            'FS SPL (fact)'[IO Name],
+            'FS SPL (fact)'[Internal Order],
+            'FS SPL (fact)'[GL Account],
+            TREATAS({"TY"}, 'FS SPL (fact)'[Year Flag]),
+            "P1",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 1),
+            "P2",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 2),
+            "P3",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 3),
+            "P4",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 4),
+            "P5",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 5),
+            "P6",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 6),
+            "P7",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 7),
+            "P8",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 8),
+            "P9",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 9),
+            "P10", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 10),
+            "P11", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 11),
+            "P12", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 12),
+            "FY Total", SUM('FS SPL (fact)'[Amount])
+        ),
+        NOT ISBLANK([FY Total])
+    )
+RETURN
+    _Base
+ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[Internal Order], 'FS SPL (fact)'[GL Account]
