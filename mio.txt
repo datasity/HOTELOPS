@@ -2,8 +2,12 @@ EVALUATE
 VAR _Actuals =
     SUMMARIZECOLUMNS(
         'FS SPL (fact)'[FinYear],
+        'FS SPL (fact)'[SPL Owner],
+        'FS SPL (fact)'[SPL Line],
+        'FS SPL (fact)'[Child Name],
         'FS SPL (fact)'[Cost Centre],
         'FS SPL (fact)'[IO],
+        'FS SPL (fact)'[IO Name],
         'FS SPL (fact)'[GL],
         TREATAS({"TY"}, 'FS SPL (fact)'[Year Flag]),
         "P1",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 1),
@@ -20,6 +24,7 @@ VAR _Actuals =
         "P12", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 12),
         "FY Total", SUM('FS SPL (fact)'[Amount])
     )
+
 VAR _Versions =
     DATATABLE(
         "Plan Version", STRING,
@@ -30,33 +35,27 @@ VAR _Versions =
             {"P9F Marketing"}, {"P9FCC"}
         }
     )
-VAR _Marketing =
-    TREATAS(
-        {"G10017","G10024","G10036","G10092","G10095"},
-        'FS SPL (fact)'[Cost Centre]
-    )
+
 VAR _Joined =
     SELECTCOLUMNS(
         FILTER(
             CROSSJOIN(_Actuals, _Versions),
             NOT ISBLANK([FY Total])
-            && (
-                (RIGHT([Plan Version], 9) = "Marketing"
-                    && CONTAINSROW({"G10017","G10024","G10036","G10092","G10095"}, [Cost Centre]))
-                ||
-                (RIGHT([Plan Version], 2) = "CC"
-                    && NOT CONTAINSROW({"G10017","G10024","G10036","G10092","G10095"}, [Cost Centre]))
-            )
         ),
         "Plan Version", [Plan Version],
         "FY", [FinYear],
+        "SPL Owner", [SPL Owner],
+        "SPL Lines", [SPL Line],
+        "Child Name", [Child Name],
         "Cost Centre", [Cost Centre],
         "Internal Order", [IO],
+        "IO Name", [IO Name],
         "GL", [GL],
         "1", [P1], "2", [P2], "3", [P3], "4", [P4], "5", [P5], "6", [P6],
         "7", [P7], "8", [P8], "9", [P9], "10", [P10], "11", [P11], "12", [P12],
         "FY Total", [FY Total]
     )
+
 RETURN
     _Joined
-ORDER BY [Plan Version], [Cost Centre], [Internal Order], [GL]
+ORDER BY [Plan Version], [SPL Owner], [SPL Lines], [Cost Centre], [Internal Order], [GL]
