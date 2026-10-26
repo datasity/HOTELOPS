@@ -1,30 +1,62 @@
 EVALUATE
-VAR _TY = "TY"
-VAR _Base =
-    FILTER(
-        SUMMARIZECOLUMNS(
-            'FS SPL (fact)'[FinYear],
-            'FS SPL (fact)'[Cost Centre],
-            'FS SPL (fact)'[IO Name],
-            'FS SPL (fact)'[Internal Order],
-            'FS SPL (fact)'[GL Account],
-            TREATAS({"TY"}, 'FS SPL (fact)'[Year Flag]),
-            "P1",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 1),
-            "P2",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 2),
-            "P3",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 3),
-            "P4",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 4),
-            "P5",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 5),
-            "P6",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 6),
-            "P7",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 7),
-            "P8",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 8),
-            "P9",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 9),
-            "P10", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 10),
-            "P11", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 11),
-            "P12", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 12),
-            "FY Total", SUM('FS SPL (fact)'[Amount])
+VAR _Actuals =
+    SUMMARIZECOLUMNS(
+        'FS SPL (fact)'[FinYear],
+        'FS SPL (fact)'[Cost Centre],
+        'FS SPL (fact)'[IO],
+        'FS SPL (fact)'[GL],
+        TREATAS({"TY"}, 'FS SPL (fact)'[Year Flag]),
+        "P1",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 1),
+        "P2",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 2),
+        "P3",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 3),
+        "P4",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 4),
+        "P5",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 5),
+        "P6",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 6),
+        "P7",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 7),
+        "P8",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 8),
+        "P9",  CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 9),
+        "P10", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 10),
+        "P11", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 11),
+        "P12", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Period] = 12),
+        "FY Total", SUM('FS SPL (fact)'[Amount])
+    )
+VAR _Versions =
+    DATATABLE(
+        "Plan Version", STRING,
+        {
+            {"BUD Marketing"}, {"BUDCC"},
+            {"P3F Marketing"}, {"P3FCC"},
+            {"P6F Marketing"}, {"P6FCC"},
+            {"P9F Marketing"}, {"P9FCC"}
+        }
+    )
+VAR _Marketing =
+    TREATAS(
+        {"G10017","G10024","G10036","G10092","G10095"},
+        'FS SPL (fact)'[Cost Centre]
+    )
+VAR _Joined =
+    SELECTCOLUMNS(
+        FILTER(
+            CROSSJOIN(_Actuals, _Versions),
+            NOT ISBLANK([FY Total])
+            && (
+                (RIGHT([Plan Version], 9) = "Marketing"
+                    && CONTAINSROW({"G10017","G10024","G10036","G10092","G10095"}, [Cost Centre]))
+                ||
+                (RIGHT([Plan Version], 2) = "CC"
+                    && NOT CONTAINSROW({"G10017","G10024","G10036","G10092","G10095"}, [Cost Centre]))
+            )
         ),
-        NOT ISBLANK([FY Total])
+        "Plan Version", [Plan Version],
+        "FY", [FinYear],
+        "Cost Centre", [Cost Centre],
+        "Internal Order", [IO],
+        "GL", [GL],
+        "1", [P1], "2", [P2], "3", [P3], "4", [P4], "5", [P5], "6", [P6],
+        "7", [P7], "8", [P8], "9", [P9], "10", [P10], "11", [P11], "12", [P12],
+        "FY Total", [FY Total]
     )
 RETURN
-    _Base
-ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[Internal Order], 'FS SPL (fact)'[GL Account]
+    _Joined
+ORDER BY [Plan Version], [Cost Centre], [Internal Order], [GL]
