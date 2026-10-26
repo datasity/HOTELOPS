@@ -1,0 +1,15 @@
+EVALUATE
+VAR _CCs = SELECTCOLUMNS('Marketing', "CC", 'Marketing'[GL])
+RETURN
+CALCULATETABLE(
+    SUMMARIZECOLUMNS(
+        'FS SPL (fact)'[Cost Centre],
+        'FS SPL (fact)'[IO Name],
+        'FS SPL (fact)'[Period],
+        "Amount", SUM('FS SPL (fact)'[Amount])
+    ),
+    'FS SPL (fact)'[Year Flag] = "TY",
+    'FS SPL (fact)'[Period] <= 6,
+    TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
+)
+ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[Period]
