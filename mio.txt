@@ -1,34 +1,136 @@
-#"Buffered" = Table.Buffer(#"Changed column type"),
+Selected Measure Marketing = -- ================================================================
+-- SELECTED MEASURE MARKETING
+-- ================================================================
+-- PURPOSE:
+--   Main calculation measure for the Marketing matrix.
+--   Switches on Measure Selector[Measure Ref] to return the correct
+--   amount for each column (Actual, v LY, Budget, YTD etc).
+--
+-- ROW TYPE LOGIC:
+--   Context is read from Marketing PL Structure calculated table:
+--   - Detail    = IO Name row. Filters fact by IO Name and CCs for headline.
+--   - Others    = Residual row. Total CC amount MINUS all IO-mapped amounts.
+--                 Catches Cost Centre-only postings with no IO allocation.
+--   - Subtotal  = Headline total. All amounts for all CCs under that headline.
+--   - GrandTotal= Total FS Marketing. All CCs across all headlines.
+--
+-- OTHERS LOGIC:
+--   _MappedIOs = all IO Names that have explicit IO rows under the same CCs.
+--   _TotalCC   = full CC total regardless of IO assignment.
+--   Others = _TotalCC - IO-mapped amounts = residual/catch-all bucket.
+--   This ensures Others + all IO rows = Subtotal (no double counting).
+--
+-- MAINTENANCE:
+--   If a new Marketing Headline is added:
+--     1. Add to Marketing Dataflow entity (Headline + GL)
+--     2. Add row to _HeadlineMeta DATATABLE in Marketing PL Structure partition
+--   If Others label needs changing: update _HeadlineMeta Others Label column.
+--   If Subtotal label needs changing: update _HeadlineMeta Subtotal Label column.
+--   Year Flags must match fact table exactly (TY/LY/LY1/BUD/P3F/P6F/P9F).
+-- ================================================================
+VAR _Ref      = SELECTEDVALUE('Measure Selector'[Measure Ref], "")
+VAR _P        = [_Selected Period]
+VAR _S        = [_Scale]
+VAR _RowType  = SELECTEDVALUE('Marketing PL Structure'[Row Type], "")
+VAR _IOFilter = SELECTEDVALUE('Marketing PL Structure'[IO Filter], "")
+VAR _Headline = SELECTEDVALUE('Marketing PL Structure'[Marketing Headline], "")
+VAR _IsGrand  = _RowType = "GrandTotal"
+VAR _IsYTD    = RIGHT(_Ref, 3) = "YTD"
+VAR _IsVariance = _Ref IN {"v LY","v LY1","v Budget","v P3F","v P6F","v P9F","v LY YTD","v LY1 YTD","v Budget YTD","v P3F YTD","v P6F YTD","v P9F YTD"}
+////////////////////////////////////
+VAR _SelectedFY =
+    MAX('FS SPL (fact)'[FinYear])
 
-#"P3F Loaded" = Table.RowCount(Table.SelectRows(#"Buffered", each [Year Flag] = "P3F" and [FLAGGED] = "PASS")) > 0,
-#"P6F Loaded" = Table.RowCount(Table.SelectRows(#"Buffered", each [Year Flag] = "P6F" and [FLAGGED] = "PASS")) > 0,
-#"P9F Loaded" = Table.RowCount(Table.SelectRows(#"Buffered", each [Year Flag] = "P9F" and [FLAGGED] = "PASS")) > 0,
+VAR _IsForecastMeasure =
+    _Ref IN {
+        "P3 Forecast",
+        "P6 Forecast",
+        "P9 Forecast",
+        "P3 Forecast YTD",
+        "P6 Forecast YTD",
+        "P9 Forecast YTD",
+        "v P3F",
+        "v P6F",
+        "v P9F",
+        "v P3F YTD",
+        "v P6F YTD",
+        "v P9F YTD"
+    }
 
-#"Drop Early Forecast" =
-    Table.SelectRows(#"Buffered", each not (
-        ([Year Flag] = "P3F" and [Period] <= 3) or
-        ([Year Flag] = "P6F" and [Period] <= 6) or
-        ([Year Flag] = "P9F" and [Period] <= 9))),
+///////////////////////////////////
 
-#"TY Base" = Table.SelectRows(#"Buffered", each [Year Flag] = "TY" and [Period] <= 9),
+-- CCs in scope: all CCs for grand total, headline CCs otherwise
+VAR _CCsHeadline = SELECTCOLUMNS(FILTER(ALL('Marketing'), 'Marketing'[Marketing Headline] = _Headline), "CC", 'Marketing'[GL])
+VAR _CCsAll      = SELECTCOLUMNS(ALL('Marketing'), "CC", 'Marketing'[GL])
+-- Mapped IOs for headline (used by Others exclusion logic)
+VAR _MappedIOsH =
+    SELECTCOLUMNS(
+        FILTER(
+            SUMMARIZE(CALCULATETABLE('FS SPL (fact)', 'FS SPL (fact)'[SPL Line source]="IO", TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), 'FS SPL (fact)'[IO Name]),
+            NOT ISBLANK('FS SPL (fact)'[IO Name])
+        ), "IO", 'FS SPL (fact)'[IO Name])
+-- Mapped IOs for grand total
+VAR _MappedIOsAll =
+    SELECTCOLUMNS(
+        FILTER(
+            SUMMARIZE(CALCULATETABLE('FS SPL (fact)', 'FS SPL (fact)'[SPL Line source]="IO", TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), 'FS SPL (fact)'[IO Name]),
+            NOT ISBLANK('FS SPL (fact)'[IO Name])
+        ), "IO", 'FS SPL (fact)'[IO Name])
+-- Resolve Year Flags for TY and comparison
+VAR _YF_TY = SWITCH(_Ref,
+    "Actual","TY","Actual LY","LY","Actual LY1","LY1","Budget","BUD",
+    "P3 Forecast","P3F","P6 Forecast","P6F","P9 Forecast","P9F",
+    "Actual YTD","TY","Actual LY YTD","LY","Actual LY1 YTD","LY1","Budget YTD","BUD",
+    "P3 Forecast YTD","P3F","P6 Forecast YTD","P6F","P9 Forecast YTD","P9F",
+    "v LY","TY","v LY1","TY","v Budget","TY","v P3F","TY","v P6F","TY","v P9F","TY",
+    "v LY YTD","TY","v LY1 YTD","TY","v Budget YTD","TY","v P3F YTD","TY","v P6F YTD","TY","v P9F YTD","TY",""
+)
+VAR _YF_CMP = SWITCH(_Ref,
+    "v LY","LY","v LY1","LY1","v Budget","BUD","v P3F","P3F","v P6F","P6F","v P9F","P9F",
+    "v LY YTD","LY","v LY1 YTD","LY1","v Budget YTD","BUD",
+    "v P3F YTD","P3F","v P6F YTD","P6F","v P9F YTD","P9F",""
+)
+-- Pre-calculate all amounts needed
+VAR _Calc_Detail_TY    = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
 
-#"P3F Actuals" =
-    if #"P3F Loaded" then
-        Table.TransformColumns(Table.SelectRows(#"TY Base", each [Period] <= 3),
-            {{"Year Flag", each "P3F", type text}, {"Version", each "Actuals in P3F", type text}})
-    else Table.FirstN(#"TY Base", 0),
 
-#"P6F Actuals" =
-    if #"P6F Loaded" then
-        Table.TransformColumns(Table.SelectRows(#"TY Base", each [Period] <= 6),
-            {{"Year Flag", each "P6F", type text}, {"Version", each "Actuals in P6F", type text}})
-    else Table.FirstN(#"TY Base", 0),
+VAR _Calc_Detail_CMP   = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,'FS SPL (fact)'[IO Name]=_IOFilter,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
+VAR _TC_H_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
+VAR _TC_H_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre])))
+VAR _IA_H_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])))
+VAR _IA_H_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsHeadline,'FS SPL (fact)'[Cost Centre]),TREATAS(_MappedIOsH,'FS SPL (fact)'[IO Name])))
+VAR _TC_All_TY  = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_TY,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])))
+VAR _TC_All_CMP = IF(_IsYTD, CALCULATE(SUM('FS SPL (fact)'[Amount]),REMOVEFILTERS('FS SPL (fact)'[Period]),'FS SPL (fact)'[Period]<=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])), CALCULATE(SUM('FS SPL (fact)'[Amount]),'FS SPL (fact)'[Period]=_P,'FS SPL (fact)'[Year Flag]=_YF_CMP,TREATAS(_CCsAll,'FS SPL (fact)'[Cost Centre])))
+VAR _AmtTY  = SWITCH(_RowType, "Detail",_Calc_Detail_TY, "Others",_TC_H_TY-_IA_H_TY, "Subtotal",_TC_H_TY, "GrandTotal",_TC_All_TY, BLANK())
+VAR _AmtCMP = IF(NOT _IsVariance, 0, SWITCH(_RowType, "Detail",_Calc_Detail_CMP, "Others",_TC_H_CMP-_IA_H_CMP, "Subtotal",_TC_H_CMP, "GrandTotal",_TC_All_CMP, 0))
+VAR _Result = IF(_IsVariance, _AmtTY - _AmtCMP, _AmtTY)
+RETURN
+ IF(_RowType = "" || _YF_TY = "", BLANK(), IF(ISBLANK(_Result), 0, DIVIDE(_Result, _S, 0)))
 
-#"P9F Actuals" =
-    if #"P9F Loaded" then
-        Table.TransformColumns(#"TY Base",
-            {{"Year Flag", each "P9F", type text}, {"Version", each "Actuals in P9F", type text}})
-    else Table.FirstN(#"TY Base", 0),
 
-#"Forecast With Actuals" =
-    Table.Combine({#"Drop Early Forecast", #"P3F Actuals", #"P6F Actuals", #"P9F Actuals"})
+
+
+
+
+
+
+• Actual Month
+• P6F
+• vs P6F
+• Budget
+• vs Budget
+• YTD
+• P6F YTD
+• vs P6F YTD
+• Budget YTD
+• vs Budget YTD
+
+
+would it be possible to switch the order of the columns so that it shows 
+Actual
+P6F
+vs P6F
+Budget
+vs budget
+please?  no worries if too tricky
+
