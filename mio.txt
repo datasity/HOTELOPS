@@ -38,6 +38,7 @@ GENERATE(
         _Rows,
         [RowType],
         'FS SPL (fact)'[IO Name],
+        'FS SPL (fact)'[IO],
         'FS SPL (fact)'[Cost Centre],
         'FS SPL (fact)'[GL],
         "Actual", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "TY"),
@@ -45,4 +46,4 @@ GENERATE(
         "P6F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P6F")
     )
 )
-ORDER BY [Headline], [RowType], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
+ORDER BY [Headline], [RowType], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[IO], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
