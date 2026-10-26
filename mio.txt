@@ -1,15 +1,48 @@
 EVALUATE
-VAR _CCs = SELECTCOLUMNS('Marketing', "CC", 'Marketing'[GL])
+VAR _P = 2
+VAR _Headlines = DISTINCT(SELECTCOLUMNS('Marketing', "Headline", 'Marketing'[Marketing Headline]))
 RETURN
-CALCULATETABLE(
-    SUMMARIZECOLUMNS(
-        'FS SPL (fact)'[Cost Centre],
+GENERATE(
+    _Headlines,
+    VAR _H   = [Headline]
+    VAR _CCs = SELECTCOLUMNS(
+                   FILTER(ALL('Marketing'), 'Marketing'[Marketing Headline] = _H),
+                   "CC", 'Marketing'[GL])
+    VAR _Mapped =
+        SELECTCOLUMNS(
+            FILTER(
+                SUMMARIZE(
+                    CALCULATETABLE(
+                        'FS SPL (fact)',
+                        'FS SPL (fact)'[SPL Line source] = "IO",
+                        TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
+                    ),
+                    'FS SPL (fact)'[IO Name]
+                ),
+                NOT ISBLANK('FS SPL (fact)'[IO Name])
+            ),
+            "IO", 'FS SPL (fact)'[IO Name])
+    VAR _Rows =
+        ADDCOLUMNS(
+            CALCULATETABLE(
+                'FS SPL (fact)',
+                TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre]),
+                'FS SPL (fact)'[Period] = _P
+            ),
+            "RowType",
+                IF(NOT ISBLANK('FS SPL (fact)'[IO Name]) && 'FS SPL (fact)'[IO Name] IN _Mapped,
+                   "Detail", "Others")
+        )
+    RETURN
+    SUMMARIZE(
+        _Rows,
+        [RowType],
         'FS SPL (fact)'[IO Name],
-        'FS SPL (fact)'[Period],
-        "Amount", SUM('FS SPL (fact)'[Amount])
-    ),
-    'FS SPL (fact)'[Year Flag] = "TY",
-    'FS SPL (fact)'[Period] <= 6,
-    TREATAS(_CCs, 'FS SPL (fact)'[Cost Centre])
+        'FS SPL (fact)'[Cost Centre],
+        'FS SPL (fact)'[GL],
+        "Actual", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "TY"),
+        "Budget", CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "BUD"),
+        "P6F",    CALCULATE(SUM('FS SPL (fact)'[Amount]), 'FS SPL (fact)'[Year Flag] = "P6F")
+    )
 )
-ORDER BY 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[Period]
+ORDER BY [Headline], [RowType], 'FS SPL (fact)'[IO Name], 'FS SPL (fact)'[Cost Centre], 'FS SPL (fact)'[GL]
