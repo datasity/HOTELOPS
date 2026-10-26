@@ -1,192 +1,26 @@
 -- ============================================================
--- MEASURE SELECTOR TABLE
--- Measure Name prefixed with REPT(UNICHAR(8203), Sort)
---      Makes each Measure Name globally unique for PBI Service.
---      UNICHAR(8203) = Zero Width Space, invisible in matrix columns.
---      Sort must be unique per row so the prefix is unique per row.
--- Is Visible logic: CUMULATIVE forecast visibility
---   _MaxP <= 3  : no forecasts shown
---   _MaxP <= 6  : P3F visible
---   _MaxP <= 9  : P3F + P6F visible
---   _MaxP >  9  : P3F + P6F + P9F all visible
--- VIEW IDs:
---   1 = Current Month, 2 = Progressive, 3 = Combined, 4 = All
---   5 = P3F View, 6 = P6F View, 7 = P9F View
--- NEW VIEWS USE SORT 910+ (never reuse a Sort number)
+-- VIEW SELECTOR TABLE
+-- Drives the view slicer on the matrix page (single select).
+-- The Measure Selector filters by View ID.
+--   1 = Current Month
+--   2 = Progressive (YTD only)
+--   3 = Combined
+--   4 = All
+--   5 = P3F View: Actual, P3F, v P3F, Budget, v Budget, then YTD set
+--   6 = P6F View: same layout for P6F
+--   7 = P9F View: same layout for P9F
 -- ============================================================
-
-VAR PLABEL = VALUE(SELECTEDVALUE('Dim Period'[Period]))
-
-VAR _P3FExists =
-   CALCULATE(
-       COUNTROWS('FS SPL (fact)'),
-       ALL('FS SPL (fact)'),
-       'FS SPL (fact)'[Year Flag] = "P3F"
-   ) > 0
-
-VAR _P6FExists =
-   CALCULATE(
-       COUNTROWS('FS SPL (fact)'),
-       ALL('FS SPL (fact)'),
-       'FS SPL (fact)'[Year Flag] = "P6F"
-   ) > 0
-
-VAR _P9FExists =
-   CALCULATE(
-       COUNTROWS('FS SPL (fact)'),
-       ALL('FS SPL (fact)'),
-       'FS SPL (fact)'[Year Flag] = "P9F"
-   ) > 0
-
-VAR _MaxP =
-    CALCULATE(
-        MAX('FS SPL (fact)'[Period]),
-        ALL('FS SPL (fact)'),
-        'FS SPL (fact)'[TBL] = "BEAM"
-    )
-
-VAR _VisibleForecasts =
-    SWITCH(TRUE(),
-        _MaxP <= 3, "",
-        _MaxP <= 6, "P3F",
-        _MaxP <= 9, "P3F|P6F",
-        "P3F|P6F|P9F"
-    )
-
-VAR _Rows =
-    DATATABLE(
-        "Measure Name",  STRING,
-        "Measure Ref",   STRING,
-        "Sort",          INTEGER,
-        "View ID",       INTEGER,
-        "Group",         STRING,
-        "Forecast Flag", STRING,
-        {
-            -- MONTH VIEW (View ID = 1)
-            {"Actual",         "Actual",          10,  1, "Actuals",  "ALL"},
-            {"v LY",           "v LY",             20,  1, "Actuals",  "ALL"},
-            {"v LY1 ",          "v LY1",            30,  1, "Actuals",  "ALL"},
-            {"v Budget",       "v Budget",          60,  1, "Budget",   "ALL"},
-            {"v P3F",          "v P3F",             90,  1, "Forecast", "P3F"},
-            {"v P6F",          "v P6F",             110, 1, "Forecast", "P6F"},
-            {"v P9F",          "v P9F",             130, 1, "Forecast", "P9F"},
-            -- PROGRESSIVE VIEW (View ID = 2)
-            {"Actual YTD",     "Actual YTD",        110, 2, "Actuals",  "ALL"},
-            {"v LY YTD",       "v LY YTD",          120, 2, "Actuals",  "ALL"},
-            {"v LY1 YTD",      "v LY1 YTD",         130, 2, "Actuals",  "ALL"},
-            {"v Budget YTD",   "v Budget YTD",       160, 2, "Budget",   "ALL"},
-            {" ",              "_Space",             170, 2, "Space",    "ALL"},
-            {"v P3F YTD",      "v P3F YTD",         190, 2, "Forecast", "P3F"},
-            {"v P6F YTD",      "v P6F YTD",         210, 2, "Forecast", "P6F"},
-            {"v P9F YTD",      "v P9F YTD",         230, 2, "Forecast", "P9F"},
-            -- ALL VIEW (View ID = 4)
-            {"Actual",         "Actual",            210, 4, "Actuals",  "ALL"},
-            {"Actual LY",      "Actual LY",         220, 4, "Actuals",  "ALL"},
-            {"v LY",           "v LY",              230, 4, "Actuals",  "ALL"},
-            {"Actual LY1",     "Actual LY1",        240, 4, "Actuals",  "ALL"},
-            {"v LY1",          "v LY1",             250, 4, "Actuals",  "ALL"},
-            {" ",              "_Space",             260, 4, "Space",    "ALL"},
-            {"Budget",         "Budget",             270, 4, "Budget",   "ALL"},
-            {"v Budget",       "v Budget",           280, 4, "Budget",   "ALL"},
-            {"",               "_Space",             290, 4, "Space",    "ALL"},
-            {"P3F",            "P3 Forecast",        300, 4, "Forecast", "P3F"},
-            {"v P3F",          "v P3F",              310, 4, "Forecast", "P3F"},
-            {"P6F",            "P6 Forecast",        320, 4, "Forecast", "P6F"},
-            {"v P6F",          "v P6F",              330, 4, "Forecast", "P6F"},
-            {"P9F",            "P9 Forecast",        340, 4, "Forecast", "P9F"},
-            {"v P9F",          "v P9F",              350, 4, "Forecast", "P9F"},
-            {"",               "_Space",             360, 4, "Space",    "ALL"},
-            {"Actual YTD",     "Actual YTD",         370, 4, "Actuals",  "ALL"},
-            {"Actual LY YTD",  "Actual LY YTD",      380, 4, "Actuals",  "ALL"},
-            {"v LY YTD",       "v LY YTD",           390, 4, "Actuals",  "ALL"},
-            {"Actual LY1 YTD", "Actual LY1 YTD",     400, 4, "Actuals",  "ALL"},
-            {"v LY1 YTD",      "v LY1 YTD",          410, 4, "Actuals",  "ALL"},
-            {"",               "_Space",             420, 4, "Space",    "ALL"},
-            {"Budget YTD",     "Budget YTD",          430, 4, "Budget",   "ALL"},
-            {"v Budget YTD",   "v Budget YTD",        440, 4, "Budget",   "ALL"},
-            {"",               "_Space",             450, 4, "Space",    "ALL"},
-            {"P3F YTD",        "P3 Forecast YTD",    460, 4, "Forecast", "P3F"},
-            {"v P3F YTD",      "v P3F YTD",          470, 4, "Forecast", "P3F"},
-            {"P6F YTD",        "P6 Forecast YTD",    480, 4, "Forecast", "P6F"},
-            {"v P6F YTD",      "v P6F YTD",          490, 4, "Forecast", "P6F"},
-            {"P9F YTD",        "P9 Forecast YTD",    500, 4, "Forecast", "P9F"},
-            {"v P9F YTD",      "v P9F YTD",          510, 4, "Forecast", "P9F"},
-            -- COMBINED VIEW (View ID = 3)
-            {"Actual",         "Actual",             610, 3, "Actuals",  "ALL"},
-            {"v LY",           "v LY",               620, 3, "Actuals",  "ALL"},
-            {"v LY1 ",          "v LY1",              630, 3, "Actuals",  "ALL"},
-            {"v Budget",       "v Budget",            660, 3, "Budget",   "ALL"},
-            {"v P3F",          "v P3F",               690, 3, "Forecast", "P3F"},
-            {"v P6F",          "v P6F",               710, 3, "Forecast", "P6F"},
-            {"v P9F",          "v P9F",               730, 3, "Forecast", "P9F"},
-            {"Actual YTD",     "Actual YTD",          740, 3, "Actuals",  "ALL"},
-            {"",               "_Space",              745, 3, "Space",    "ALL"},
-            {"v LY YTD",       "v LY YTD",            750, 3, "Actuals",  "ALL"},
-            {"v LY1 YTD",      "v LY1 YTD",           760, 3, "Actuals",  "ALL"},
-            {"v Budget YTD",   "v Budget YTD",        770, 3, "Budget",   "ALL"},
-            {"",               "_Space",              780, 3, "Space",    "ALL"},
-            {"v P3F YTD",      "v P3F YTD",           790, 3, "Forecast", "P3F"},
-            {"v P6F YTD",      "v P6F YTD",           800, 3, "Forecast", "P6F"},
-            {"v P9F YTD",      "v P9F YTD",           810, 3, "Forecast", "P9F"},
-            -- P3F VIEW (View ID = 5)
-            {"Actual",         "Actual",             910, 5, "Actuals",  "ALL"},
-            {"P3F",            "P3 Forecast",        920, 5, "Forecast", "P3F"},
-            {"v P3F",          "v P3F",              930, 5, "Forecast", "P3F"},
-            {"Budget",         "Budget",             940, 5, "Budget",   "ALL"},
-            {"v Budget",       "v Budget",           950, 5, "Budget",   "ALL"},
-            {"",               "_Space",             960, 5, "Space",    "ALL"},
-            {"Actual YTD",     "Actual YTD",         970, 5, "Actuals",  "ALL"},
-            {"P3F YTD",        "P3 Forecast YTD",    980, 5, "Forecast", "P3F"},
-            {"v P3F YTD",      "v P3F YTD",          990, 5, "Forecast", "P3F"},
-            {"Budget YTD",     "Budget YTD",        1000, 5, "Budget",   "ALL"},
-            {"v Budget YTD",   "v Budget YTD",      1010, 5, "Budget",   "ALL"},
-            -- P6F VIEW (View ID = 6)
-            {"Actual",         "Actual",            1110, 6, "Actuals",  "ALL"},
-            {"P6F",            "P6 Forecast",       1120, 6, "Forecast", "P6F"},
-            {"v P6F",          "v P6F",             1130, 6, "Forecast", "P6F"},
-            {"Budget",         "Budget",            1140, 6, "Budget",   "ALL"},
-            {"v Budget",       "v Budget",          1150, 6, "Budget",   "ALL"},
-            {"",               "_Space",            1160, 6, "Space",    "ALL"},
-            {"Actual YTD",     "Actual YTD",        1170, 6, "Actuals",  "ALL"},
-            {"P6F YTD",        "P6 Forecast YTD",   1180, 6, "Forecast", "P6F"},
-            {"v P6F YTD",      "v P6F YTD",         1190, 6, "Forecast", "P6F"},
-            {"Budget YTD",     "Budget YTD",        1200, 6, "Budget",   "ALL"},
-            {"v Budget YTD",   "v Budget YTD",      1210, 6, "Budget",   "ALL"},
-            -- P9F VIEW (View ID = 7)
-            {"Actual",         "Actual",            1310, 7, "Actuals",  "ALL"},
-            {"P9F",            "P9 Forecast",       1320, 7, "Forecast", "P9F"},
-            {"v P9F",          "v P9F",             1330, 7, "Forecast", "P9F"},
-            {"Budget",         "Budget",            1340, 7, "Budget",   "ALL"},
-            {"v Budget",       "v Budget",          1350, 7, "Budget",   "ALL"},
-            {"",               "_Space",            1360, 7, "Space",    "ALL"},
-            {"Actual YTD",     "Actual YTD",        1370, 7, "Actuals",  "ALL"},
-            {"P9F YTD",        "P9 Forecast YTD",   1380, 7, "Forecast", "P9F"},
-            {"v P9F YTD",      "v P9F YTD",         1390, 7, "Forecast", "P9F"},
-            {"Budget YTD",     "Budget YTD",        1400, 7, "Budget",   "ALL"},
-            {"v Budget YTD",   "v Budget YTD",      1410, 7, "Budget",   "ALL"}
-        }
-    )
-
-VAR _WithVisibility =
-    ADDCOLUMNS(
-        _Rows,
-        "Is Visible",
-        IF(
-            [Forecast Flag] = "ALL"
-            || CONTAINSSTRING(_VisibleForecasts, [Forecast Flag]),
-            1,
-            0
-        )
-    )
-
-RETURN
-    SELECTCOLUMNS(
-        _WithVisibility,
-        "Measure Name",  REPT(UNICHAR(8203), [Sort]) & [Measure Name],
-        "Measure Ref",   [Measure Ref],
-        "Sort",          [Sort],
-        "View ID",       [View ID],
-        "Group",         [Group],
-        "Forecast Flag", [Forecast Flag],
-        "Is Visible",    [Is Visible]
-    )
+DATATABLE(
+    "View ID",   INTEGER,
+    "View Name", STRING,
+    "View Sort", INTEGER,
+    {
+        {1, "Current Month", 1},
+        {2, "Progressive",   2},
+        {3, "Combined",      3},
+        {4, "All",           4},
+        {5, "P3F View",      5},
+        {6, "P6F View",      6},
+        {7, "P9F View",      7}
+    }
+)
